@@ -64,11 +64,26 @@ if(NOT EXISTS "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a")
         RESULT_VARIABLE _picotls_checkout
     )
 
+    # The nested build has to be told it is cross-compiling, or it probes the
+    # host and picks up host headers and host feature detection.
+    set(_picotls_cross "")
+    if(CMAKE_CROSSCOMPILING)
+        list(APPEND _picotls_cross
+            "-DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}"
+            "-DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}"
+        )
+        if(CMAKE_TOOLCHAIN_FILE)
+            get_filename_component(_picotls_toolchain "${CMAKE_TOOLCHAIN_FILE}" ABSOLUTE)
+            list(APPEND _picotls_cross "-DCMAKE_TOOLCHAIN_FILE=${_picotls_toolchain}")
+        endif()
+    endif()
+
     execute_process(
         COMMAND ${CMAKE_COMMAND} -S "${CAN_HUB_PICOTLS_PREFIX}" -B "${CAN_HUB_PICOTLS_BUILD}"
                 -DCMAKE_BUILD_TYPE=Release
                 -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
                 -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+                ${_picotls_cross}
                 ${_picotls_fusion_option}
                 "-DCMAKE_C_FLAGS=-ffunction-sections -fdata-sections"
         RESULT_VARIABLE _picotls_configure
