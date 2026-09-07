@@ -2,17 +2,7 @@
 
 #include <string.h>
 
-#include <openssl/evp.h>
-#include <openssl/x509.h>
-
-#define ED25519_SIGNATURE_SIZE 64
-
-static bool rawPublicKeyOfCertificate(ptls_iovec_t certificate, uint8_t *public_key);
-static bool verifyEd25519(
-    const uint8_t *public_key,
-    ptls_iovec_t data,
-    ptls_iovec_t signature
-);
+#include "platform/linux/shared/tls_ed25519.h"
 
 /* ---------- public ---------- */
 
@@ -31,7 +21,7 @@ bool TlsPeerCertificate_Accept(TlsPeerCertificate *self, ptls_iovec_t *certifica
     if (!TlsIdentity_FingerprintOfDer(certificates[0].base, certificates[0].len, self->fingerprint)) {
         return false;
     }
-    if (!rawPublicKeyOfCertificate(certificates[0], self->public_key)) {
+    if (!TlsEd25519_PublicKeyOfCertificate(certificates[0].base, certificates[0].len, self->public_key)) {
         return false;
     }
     self->loaded = true;
@@ -62,63 +52,12 @@ int32_t TlsPeerCertificate_VerifySignature(
     if (algorithm != PTLS_SIGNATURE_ED25519) {
         return PTLS_ALERT_ILLEGAL_PARAMETER;
     }
-    if (signature.len != ED25519_SIGNATURE_SIZE) {
+    if (signature.len != TLS_ED25519_SIGNATURE_SIZE) {
         return PTLS_ALERT_DECRYPT_ERROR;
     }
-    if (!verifyEd25519(self->public_key, data, signature)) {
+    if (!TlsEd25519_Verify(self->public_key, data.base, data.len, signature.base)) {
         return PTLS_ALERT_DECRYPT_ERROR;
     }
 
     return 0;
-}
-
-/* ---------- private ---------- */
-
-static bool rawPublicKeyOfCertificate(ptls_iovec_t certificate, uint8_t *public_key)
-{
-    const uint8_t *pointer = certificate.base;
-    X509 *parsed;
-    EVP_PKEY *key;
-    size_t key_size = TLS_IDENTITY_PUBLIC_KEY_SIZE;
-    bool extracted = false;
-
-    parsed = d2i_X509(NULL, &pointer, (long)certificate.len);
-    if (parsed == NULL) {
-        return false;
-    }
-
-    key = X509_get0_pubkey(parsed);
-    if (key != NULL && EVP_PKEY_get_raw_public_key(key, public_key, &key_size) == 1) {
-        extracted = key_size == TLS_IDENTITY_PUBLIC_KEY_SIZE;
-    }
-    X509_free(parsed);
-
-    return extracted;
-}
-
-static bool verifyEd25519(
-    const uint8_t *public_key,
-    ptls_iovec_t data,
-    ptls_iovec_t signature
-)
-{
-    EVP_PKEY *key;
-    EVP_MD_CTX *context;
-    bool verified = false;
-
-    key = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL, public_key, TLS_IDENTITY_PUBLIC_KEY_SIZE);
-    if (key == NULL) {
-        return false;
-    }
-
-    context = EVP_MD_CTX_new();
-    if (context != NULL) {
-        if (EVP_DigestVerifyInit(context, NULL, NULL, NULL, key) == 1) {
-            verified = EVP_DigestVerify(context, signature.base, signature.len, data.base, data.len) == 1;
-        }
-        EVP_MD_CTX_free(context);
-    }
-    EVP_PKEY_free(key);
-
-    return verified;
 }

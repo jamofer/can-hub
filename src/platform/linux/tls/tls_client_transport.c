@@ -264,6 +264,10 @@ static bool pumpCiphertextOut(TlsClientTransport *self)
 {
     ssize_t bytes_sent;
 
+    if (!TlsChannel_Flush(&self->channel)) {
+        return false;
+    }
+
     while (TlsChannel_PendingCiphertext(&self->channel) > 0) {
         bytes_sent = send(
             self->fd,
@@ -273,6 +277,9 @@ static bool pumpCiphertextOut(TlsClientTransport *self)
         );
         if (bytes_sent > 0) {
             TlsChannel_ConsumeCiphertext(&self->channel, (size_t)bytes_sent);
+            if (!TlsChannel_Flush(&self->channel)) {
+                return false;
+            }
             continue;
         }
         if (bytes_sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {

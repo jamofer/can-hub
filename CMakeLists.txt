@@ -12,7 +12,7 @@ set(CMAKE_C_FLAGS_DEBUG "-O0 -g")
 
 add_compile_options(-Wall -Wextra)
 
-option(CAN_HUB_STATIC "Fully static binaries against a static OpenSSL stack" OFF)
+option(CAN_HUB_STATIC "Fully static binaries" OFF)
 
 # picotls is the only TLS stack (MIGRATION_PICOTLS.md). The cross-compile,
 # static and windows profiles are not wired into it yet; refuse them loudly
@@ -35,23 +35,20 @@ if(CAN_HUB_STATIC)
     # size (4K/16K/64K). Default 4K-aligned PT_LOAD segments fail to map and
     # SIGSEGV before main on 16K-page kernels (e.g. Raspberry Pi OS arm64 on Pi 5).
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -Wl,--gc-sections -Wl,-z,max-page-size=0x10000")
-    set(OPENSSL_ROOT_DIR "$ENV{CAN_HUB_SYSROOT}")
-    set(OPENSSL_USE_STATIC_LIBS TRUE)
-    find_package(OpenSSL REQUIRED)
-else()
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/openssl.cmake)
 endif()
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/picotls.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/monocypher.cmake)
 
 include_directories(src)
 
 include(FetchContent)
 set(ENABLE_GNUTLS OFF CACHE BOOL "" FORCE)
+# The crypto backend is built from ngtcp2's sources by
+# cmake/ngtcp2_picotls_minicrypto.cmake, so ngtcp2 itself needs no TLS stack
+# and its configure-time OpenSSL probe is skipped.
 set(ENABLE_OPENSSL OFF CACHE BOOL "" FORCE)
-set(ENABLE_PICOTLS ON CACHE BOOL "" FORCE)
-set(VANILLA_OPENSSL_INCLUDE_DIRS "${CAN_HUB_OPENSSL_PREFIX}/include" CACHE STRING "" FORCE)
-set(VANILLA_OPENSSL_LIBRARIES "${CAN_HUB_OPENSSL_PREFIX}/lib/libssl.a;${CAN_HUB_OPENSSL_PREFIX}/lib/libcrypto.a" CACHE STRING "" FORCE)
+set(ENABLE_PICOTLS OFF CACHE BOOL "" FORCE)
 set(ENABLE_SHARED_LIB OFF CACHE BOOL "" FORCE)
 set(ENABLE_STATIC_LIB ON CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -63,8 +60,10 @@ FetchContent_MakeAvailable(ngtcp2)
 
 # One name for "the TLS stack and its ngtcp2 backend", so the link lines below
 # do not have to know which one is in play.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ngtcp2_picotls_minicrypto.cmake)
+
 add_library(can_hub_tls INTERFACE)
-target_link_libraries(can_hub_tls INTERFACE ngtcp2_crypto_picotls_static picotls OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(can_hub_tls INTERFACE ngtcp2_crypto_picotls_minicrypto picotls monocypher)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(LIBCANHUB_WINDOWS_SOURCES
@@ -88,6 +87,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         src/platform/linux/shared/pinned_server_verifier.c
         src/platform/linux/shared/tls_defaults.c
         src/platform/linux/shared/tls_peer_certificate.c
+        src/platform/linux/shared/tls_ed25519.c
+    src/platform/linux/shared/tls_ed25519.c
         src/platform/linux/tls/tls_channel.c
         src/platform/linux/tls/tls_client_security.c
         src/platform/linux/quic/quic_client_security.c
@@ -164,8 +165,9 @@ set(AGENT_SOURCES
     src/platform/linux/shared/pinned_server_verifier.c
     src/platform/linux/shared/tls_defaults.c
     src/platform/linux/shared/tls_identity.c
-    src/platform/linux/shared/tls_identity_openssl.c
+    src/platform/linux/shared/tls_identity_ed25519.c
     src/platform/linux/shared/tls_peer_certificate.c
+    src/platform/linux/shared/tls_ed25519.c
     src/platform/linux/shared/message_framer.c
     src/platform/linux/socketcan/socketcan_adapter.c
     src/platform/linux/socketcan/can_netlink.c
@@ -202,8 +204,9 @@ set(HUB_SOURCES
     src/platform/linux/shared/pin_store.c
     src/platform/linux/shared/tls_defaults.c
     src/platform/linux/shared/tls_identity.c
-    src/platform/linux/shared/tls_identity_openssl.c
+    src/platform/linux/shared/tls_identity_ed25519.c
     src/platform/linux/shared/tls_peer_certificate.c
+    src/platform/linux/shared/tls_ed25519.c
     src/platform/linux/shared/message_framer.c
     src/platform/linux/tcp/tcp_channel.c
     src/platform/linux/tcp/tcp_server_transport.c
@@ -245,8 +248,9 @@ set(CLIENT_TLS_SOURCES
     src/platform/linux/shared/pinned_server_verifier.c
     src/platform/linux/shared/tls_defaults.c
     src/platform/linux/shared/tls_identity.c
-    src/platform/linux/shared/tls_identity_openssl.c
+    src/platform/linux/shared/tls_identity_ed25519.c
     src/platform/linux/shared/tls_peer_certificate.c
+    src/platform/linux/shared/tls_ed25519.c
     src/platform/linux/tls/tls_channel.c
     src/platform/linux/tls/tls_client_security.c
     src/platform/linux/tls/tls_client_transport.c

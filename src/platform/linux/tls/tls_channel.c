@@ -106,6 +106,10 @@ void TlsChannel_ConsumeCiphertext(TlsChannel *self, size_t size)
 
 size_t TlsChannel_FreeTxSpace(const TlsChannel *self)
 {
+    if (self->ciphertext.off >= TLS_CHANNEL_CIPHERTEXT_HIGH_WATER) {
+        return 0;
+    }
+
     return TLS_CHANNEL_TX_BACKLOG_SIZE - self->tx_used;
 }
 
@@ -121,9 +125,18 @@ bool TlsChannel_Queue(TlsChannel *self, const uint8_t *data, size_t size)
     return true;
 }
 
+/*
+ * Encrypting is what moves bytes from the plaintext backlog into the pending
+ * ciphertext, so it is also where backpressure has to stop: past the high
+ * water mark the plaintext stays queued and FreeTxSpace reports nothing free,
+ * which is the signal the hub pages its egress against.
+ */
 bool TlsChannel_Flush(TlsChannel *self)
 {
     if (self->state != kTLS_CHANNEL_STATE_ESTABLISHED || self->tx_used == 0) {
+        return true;
+    }
+    if (self->ciphertext.off >= TLS_CHANNEL_CIPHERTEXT_HIGH_WATER) {
         return true;
     }
 
@@ -137,7 +150,7 @@ bool TlsChannel_Flush(TlsChannel *self)
 
 bool TlsChannel_WantsWrite(const TlsChannel *self)
 {
-    return self->ciphertext.off > 0;
+    return self->ciphertext.off > 0 || self->tx_used > 0;
 }
 
 bool TlsChannel_PeerFingerprint(const TlsChannel *self, char *fingerprint_hex)

@@ -13,9 +13,8 @@
 #include <sys/stat.h>
 
 #include <picotls.h>
+#include <picotls/minicrypto.h>
 #include <picotls/pembase64.h>
-
-#include <openssl/evp.h>
 
 #define SYSTEM_STATE_DIRECTORY "/var/lib/can-hub"
 #define USER_STATE_SUBDIRECTORY "/.local/state/can-hub"
@@ -81,13 +80,9 @@ bool TlsIdentity_LoadOrCreate(
 bool TlsIdentity_FingerprintOfDer(const uint8_t *certificate_der, size_t der_size, char *fingerprint_hex)
 {
     uint8_t fingerprint[FINGERPRINT_SIZE];
-    unsigned int fingerprint_size = 0;
     size_t i;
 
-    if (!EVP_Digest(certificate_der, der_size, fingerprint, &fingerprint_size, EVP_sha256(), NULL)) {
-        return false;
-    }
-    if (fingerprint_size != FINGERPRINT_SIZE) {
+    if (ptls_calc_hash(&ptls_minicrypto_sha256, fingerprint, certificate_der, der_size) != 0) {
         return false;
     }
 

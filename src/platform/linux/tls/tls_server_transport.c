@@ -309,6 +309,10 @@ static bool pumpCiphertextOut(TlsServerTransport *self, TlsServerPeer *peer)
 
     (void)self;
 
+    if (!TlsChannel_Flush(&peer->channel)) {
+        return false;
+    }
+
     while (TlsChannel_PendingCiphertext(&peer->channel) > 0) {
         bytes_sent = send(
             peer->fd,
@@ -318,6 +322,9 @@ static bool pumpCiphertextOut(TlsServerTransport *self, TlsServerPeer *peer)
         );
         if (bytes_sent > 0) {
             TlsChannel_ConsumeCiphertext(&peer->channel, (size_t)bytes_sent);
+            if (!TlsChannel_Flush(&peer->channel)) {
+                return false;
+            }
             continue;
         }
         if (bytes_sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {

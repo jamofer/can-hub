@@ -4,7 +4,7 @@
 
 #include <string.h>
 
-#include <picotls/openssl.h>
+#include <picotls/minicrypto.h>
 
 #define NO_STREAM (-1)
 #define LOCAL_CID_LIST_MAX 32
@@ -405,7 +405,7 @@ static void buildParams(ngtcp2_transport_params *params)
 
 static void randomCid(ngtcp2_cid *cid)
 {
-    ptls_openssl_random_bytes(cid->data, QUIC_CONNECTION_CID_LENGTH);
+    ptls_minicrypto_random_bytes(cid->data, QUIC_CONNECTION_CID_LENGTH);
     cid->datalen = QUIC_CONNECTION_CID_LENGTH;
 }
 
@@ -413,7 +413,7 @@ static void randCallback(uint8_t *destination, size_t destination_length, const 
 {
     (void)rand_context;
 
-    ptls_openssl_random_bytes(destination, destination_length);
+    ptls_minicrypto_random_bytes(destination, destination_length);
 }
 
 static int getNewConnectionIdCallback(
@@ -427,9 +427,9 @@ static int getNewConnectionIdCallback(
     (void)connection;
     (void)user_data;
 
-    ptls_openssl_random_bytes(cid->data, cid_length);
+    ptls_minicrypto_random_bytes(cid->data, cid_length);
     cid->datalen = cid_length;
-    ptls_openssl_random_bytes(token, NGTCP2_STATELESS_RESET_TOKENLEN);
+    ptls_minicrypto_random_bytes(token, NGTCP2_STATELESS_RESET_TOKENLEN);
 
     return 0;
 }

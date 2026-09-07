@@ -54,7 +54,7 @@ if(NOT EXISTS "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a")
                 -DCMAKE_BUILD_TYPE=Release
                 -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
                 -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-                ${_picotls_openssl_root}
+                -DWITH_MINICRYPTO=ON
                 -DWITH_FUSION=OFF
                 "-DCMAKE_C_FLAGS=-ffunction-sections -fdata-sections"
         RESULT_VARIABLE _picotls_configure
@@ -65,7 +65,7 @@ if(NOT EXISTS "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a")
 
     execute_process(
         COMMAND ${CMAKE_COMMAND} --build "${CAN_HUB_PICOTLS_BUILD}"
-                --target picotls-core picotls-openssl picotls-minicrypto
+                --target picotls-core picotls-minicrypto
                 -j ${CAN_HUB_BUILD_PARALLELISM}
         RESULT_VARIABLE _picotls_build
     )
@@ -76,7 +76,6 @@ endif()
 
 set(PICOTLS_INCLUDE_DIR "${CAN_HUB_PICOTLS_PREFIX}/include")
 set(PICOTLS_LIBRARIES
-    "${CAN_HUB_PICOTLS_BUILD}/libpicotls-openssl.a"
     "${CAN_HUB_PICOTLS_BUILD}/libpicotls-minicrypto.a"
     "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a"
 )

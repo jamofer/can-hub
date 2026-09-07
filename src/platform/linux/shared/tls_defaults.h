@@ -3,8 +3,7 @@
 #include <stdbool.h>
 
 #include <picotls.h>
-#include <picotls/openssl.h>
-
+#include "platform/linux/shared/tls_ed25519.h"
 #include "platform/linux/shared/tls_peer_certificate.h"
 
 /*
@@ -20,7 +19,7 @@
 typedef struct {
     ptls_context_t context;
     TlsPeerResolver resolve_peer;
-    ptls_openssl_sign_certificate_t signer;
+    TlsEd25519Signer signer;
     ptls_verify_certificate_t client_certificate_acceptor;
     ptls_on_client_hello_t alpn_selector;
     bool has_signer;

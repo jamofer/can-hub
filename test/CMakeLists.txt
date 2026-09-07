@@ -11,11 +11,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
-find_package(OpenSSL REQUIRED)
-
 get_filename_component(ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(CAN_HUB_ROOT_DIR "${ROOT_DIR}")
 include(${ROOT_DIR}/cmake/picotls.cmake)
+include(${ROOT_DIR}/cmake/monocypher.cmake)
 
 include(FetchContent)
 FetchContent_Declare(sqlite3

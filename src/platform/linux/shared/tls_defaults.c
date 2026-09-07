@@ -1,10 +1,10 @@
 #include "platform/linux/shared/tls_defaults.h"
 
+#include <picotls/minicrypto.h>
+
+#include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
-
-#include <openssl/evp.h>
-#include <openssl/pem.h>
 
 #include "platform/linux/shared/tls_peer_certificate.h"
 
@@ -14,6 +14,22 @@ static const ptls_iovec_t alpn_protocols[] = {
     { (uint8_t *)ALPN_PROTOCOL, sizeof(ALPN_PROTOCOL) - 1 },
 };
 static const uint16_t verifiable_signature_algorithms[] = { PTLS_SIGNATURE_ED25519, UINT16_MAX };
+
+/*
+ * CHACHA20-POLY1305 first, deliberately. cifra, which backs picotls's
+ * minicrypto binding, has no AES-NI path and its GCM is pathologically slow:
+ * measured at 149 us for a 40-byte packet against 0.765 us for CHACHA20 —
+ * roughly 200x, enough to collapse data-plane throughput. CHACHA20 is the
+ * algorithm software implementations are good at, and it is what every
+ * constrained target will want too. AES-128-GCM stays as the mandatory
+ * fallback, and QUIC Initial packets pay it regardless since RFC 9001 fixes
+ * that suite.
+ */
+static ptls_cipher_suite_t *cipher_suites[] = {
+    &ptls_minicrypto_chacha20poly1305sha256,
+    &ptls_minicrypto_aes128gcmsha256,
+    NULL,
+};
 
 static void initCommonProfile(TlsProfile *self);
 static int acceptAnyClientCertificate(
@@ -26,7 +42,6 @@ static int acceptAnyClientCertificate(
     size_t count
 );
 static int selectAlpnProtocol(ptls_on_client_hello_t *selector, ptls_t *tls, ptls_on_client_hello_parameters_t *parameters);
-static EVP_PKEY *readPrivateKey(const char *key_path);
 
 /* ---------- public ---------- */
 
@@ -55,25 +70,12 @@ bool TlsDefaults_InitServerProfile(TlsProfile *self, TlsPeerResolver resolve_pee
 
 bool TlsDefaults_LoadIdentity(TlsProfile *self, const char *certificate_path, const char *key_path)
 {
-    EVP_PKEY *key;
-    bool loaded;
-
     if (ptls_load_certificates(&self->context, certificate_path) != 0) {
         return false;
     }
-
-    key = readPrivateKey(key_path);
-    if (key == NULL) {
+    if (!TlsEd25519_AttachSigner(&self->signer, &self->context, key_path)) {
         return false;
     }
-
-    loaded = ptls_openssl_init_sign_certificate(&self->signer, key) == 0;
-    EVP_PKEY_free(key);
-    if (!loaded) {
-        return false;
-    }
-
-    self->context.sign_certificate = &self->signer.super;
     self->has_signer = true;
 
     return true;
@@ -83,10 +85,7 @@ void TlsDefaults_FreeProfile(TlsProfile *self)
 {
     size_t i;
 
-    if (self->has_signer) {
-        ptls_openssl_dispose_sign_certificate(&self->signer);
-        self->has_signer = false;
-    }
+    self->has_signer = false;
     for(i=0; i<self->context.certificates.count; i++) {
         free(self->context.certificates.list[i].base);
     }
@@ -107,10 +106,10 @@ void TlsDefaults_ConfigureClientHandshake(ptls_handshake_properties_t *propertie
 static void initCommonProfile(TlsProfile *self)
 {
     memset(self, 0, sizeof(*self));
-    self->context.random_bytes = ptls_openssl_random_bytes;
+    self->context.random_bytes = ptls_minicrypto_random_bytes;
     self->context.get_time = &ptls_get_time;
-    self->context.key_exchanges = ptls_openssl_key_exchanges;
-    self->context.cipher_suites = ptls_openssl_cipher_suites;
+    self->context.key_exchanges = ptls_minicrypto_key_exchanges;
+    self->context.cipher_suites = cipher_suites;
 }
 
 static int acceptAnyClientCertificate(
@@ -155,18 +154,4 @@ static int selectAlpnProtocol(ptls_on_client_hello_t *selector, ptls_t *tls, ptl
     }
 
     return PTLS_ALERT_NO_APPLICATION_PROTOCOL;
-}
-
-static EVP_PKEY *readPrivateKey(const char *key_path)
-{
-    FILE *file = fopen(key_path, "r");
-    EVP_PKEY *key;
-
-    if (file == NULL) {
-        return NULL;
-    }
-    key = PEM_read_PrivateKey(file, NULL, NULL, NULL);
-    fclose(file);
-
-    return key;
 }
