@@ -11,10 +11,18 @@ Third-party components (fetched at build time, not vendored):
 
 - ngtcp2 (https://github.com/ngtcp2/ngtcp2) — MIT License. Statically linked.
 - SQLite (https://sqlite.org) — Public domain. Statically linked.
-- OpenSSL (https://openssl.org) — Apache-2.0 License. Statically linked
-  (pinned OpenSSL 3.5, via ngtcp2's crypto_ossl backend). Apache-2.0 imposes
-  no relinking obligation, so statically linked binaries — including
-  proprietary (commercially licensed) distributions — are unencumbered.
+- picotls (https://github.com/h2o/picotls) — MIT License. Statically linked;
+  the TLS 1.3 implementation for both TLS-over-TCP and QUIC, via ngtcp2's
+  crypto_picotls backend.
+- cifra (https://github.com/ctz/cifra) — CC0, and micro-ecc
+  (https://github.com/kmackay/micro-ecc) — 2-clause BSD. Statically linked as
+  picotls's minicrypto binding.
+- Monocypher (https://monocypher.org) — 2-clause BSD or CC-0. Statically
+  linked; supplies ED25519 and POLY1305.
+
+None of these impose a relinking obligation, so statically linked binaries —
+including proprietary (commercially licensed) distributions — are
+unencumbered.
 
 Interoperability:
 
