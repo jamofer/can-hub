@@ -16,22 +16,6 @@ static const ptls_iovec_t alpn_protocols[] = {
 };
 static const uint16_t verifiable_signature_algorithms[] = { PTLS_SIGNATURE_ED25519, UINT16_MAX };
 
-/*
- * CHACHA20-POLY1305 first, deliberately. cifra, which backs picotls's
- * minicrypto binding, has no AES-NI path and its GCM is pathologically slow:
- * measured at 149 us for a 40-byte packet against 0.765 us for CHACHA20 —
- * roughly 200x, enough to collapse data-plane throughput. CHACHA20 is the
- * algorithm software implementations are good at, and it is what every
- * constrained target will want too. AES-128-GCM stays as the mandatory
- * fallback, and QUIC Initial packets pay it regardless since RFC 9001 fixes
- * that suite.
- */
-static ptls_cipher_suite_t *cipher_suites[] = {
-    &can_hub_chacha20poly1305sha256,
-    &ptls_minicrypto_aes128gcmsha256,
-    NULL,
-};
-
 static void initCommonProfile(TlsProfile *self);
 static int acceptAnyClientCertificate(
     ptls_verify_certificate_t *verifier,
@@ -110,7 +94,7 @@ static void initCommonProfile(TlsProfile *self)
     self->context.random_bytes = ptls_minicrypto_random_bytes;
     self->context.get_time = &ptls_get_time;
     self->context.key_exchanges = ptls_minicrypto_key_exchanges;
-    self->context.cipher_suites = cipher_suites;
+    self->context.cipher_suites = TlsAead_CipherSuites();
 }
 
 static int acceptAnyClientCertificate(

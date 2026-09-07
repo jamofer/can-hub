@@ -56,6 +56,19 @@ string(REPLACE "#include <picotls/minicrypto.h>"
                "#include <picotls/minicrypto.h>\n#include \"platform/linux/shared/tls_aead.h\""
                _backend_text "${_backend_text}")
 
+# QUIC Initial and Retry packets are AES-128-GCM by RFC 9001 no matter what the
+# connection negotiates, and their header protection is one AES-ECB block. Route
+# both through the accessors so an AES-NI build does not leave that path on
+# cifra's constant-time AES, which is where the cheap DoS lives.
+foreach(_aes_symbol ptls_minicrypto_aes128gcm ptls_minicrypto_aes128ecb)
+    string(FIND "${_backend_text}" "&${_aes_symbol}" _aes_found)
+    if(_aes_found EQUAL -1)
+        message(FATAL_ERROR "ngtcp2 picotls backend changed shape: ${_aes_symbol} is gone, re-derive it")
+    endif()
+endforeach()
+string(REPLACE "&ptls_minicrypto_aes128gcm" "TlsAead_Aes128Gcm()" _backend_text "${_backend_text}")
+string(REPLACE "&ptls_minicrypto_aes128ecb" "TlsAead_Aes128Ecb()" _backend_text "${_backend_text}")
+
 file(WRITE "${_backend_generated}" "${_backend_text}")
 
 add_library(ngtcp2_crypto_picotls_minicrypto STATIC

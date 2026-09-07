@@ -30,6 +30,21 @@ if(NOT DEFINED CAN_HUB_BUILD_PARALLELISM)
     endif()
 endif()
 
+# fusion is picotls's AES-NI engine. It is the only fast AES available once
+# OpenSSL is gone, and QUIC needs one whatever suite is negotiated: RFC 9001
+# fixes AES-128-GCM for Initial packets, which unauthenticated peers can make
+# the hub process. x86-64 only, and gated again at runtime by
+# ptls_fusion_is_supported_by_cpu.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+    set(CAN_HUB_TLS_FUSION ON)
+    set(_picotls_fusion_option "-DWITH_FUSION=ON")
+    set(_picotls_fusion_target picotls-fusion)
+else()
+    set(CAN_HUB_TLS_FUSION OFF)
+    set(_picotls_fusion_option "-DWITH_FUSION=OFF")
+    set(_picotls_fusion_target "")
+endif()
+
 if(NOT EXISTS "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a")
     message(STATUS "Building picotls ${CAN_HUB_PICOTLS_COMMIT}, one-off per build tree")
 
@@ -54,8 +69,7 @@ if(NOT EXISTS "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a")
                 -DCMAKE_BUILD_TYPE=Release
                 -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
                 -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-                -DWITH_MINICRYPTO=ON
-                -DWITH_FUSION=OFF
+                ${_picotls_fusion_option}
                 "-DCMAKE_C_FLAGS=-ffunction-sections -fdata-sections"
         RESULT_VARIABLE _picotls_configure
     )
@@ -65,7 +79,7 @@ if(NOT EXISTS "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a")
 
     execute_process(
         COMMAND ${CMAKE_COMMAND} --build "${CAN_HUB_PICOTLS_BUILD}"
-                --target picotls-core picotls-minicrypto
+                --target picotls-core picotls-minicrypto ${_picotls_fusion_target}
                 -j ${CAN_HUB_BUILD_PARALLELISM}
         RESULT_VARIABLE _picotls_build
     )
@@ -79,7 +93,13 @@ set(PICOTLS_LIBRARIES
     "${CAN_HUB_PICOTLS_BUILD}/libpicotls-minicrypto.a"
     "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a"
 )
+if(CAN_HUB_TLS_FUSION)
+    list(INSERT PICOTLS_LIBRARIES 0 "${CAN_HUB_PICOTLS_BUILD}/libpicotls-fusion.a")
+endif()
 
 add_library(picotls INTERFACE)
+if(CAN_HUB_TLS_FUSION)
+    target_compile_definitions(picotls INTERFACE CAN_HUB_TLS_FUSION)
+endif()
 target_include_directories(picotls INTERFACE "${PICOTLS_INCLUDE_DIR}" "${CAN_HUB_PICOTLS_PREFIX}/lib")
 target_link_libraries(picotls INTERFACE ${PICOTLS_LIBRARIES})
