@@ -1,112 +1,172 @@
 #include "platform/linux/shared/tls_defaults.h"
 
-#define TLS13_CIPHERSUITES "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256"
+#include <stddef.h>
+#include <string.h>
 
-static const uint8_t alpn_wire[] = { 8, 'c', 'a', 'n', 'h', 'u', 'b', '/', '0' };
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 
-static int acceptAnyClientCertificate(X509_STORE_CTX *store_context, void *argument);
-static int selectAlpnProtocol(
-    SSL *ssl,
-    const unsigned char **out,
-    unsigned char *out_length,
-    const unsigned char *in,
-    unsigned int in_length,
-    void *argument
+#include "platform/linux/shared/tls_peer_certificate.h"
+
+#define ALPN_PROTOCOL "canhub/0"
+
+static const ptls_iovec_t alpn_protocols[] = {
+    { (uint8_t *)ALPN_PROTOCOL, sizeof(ALPN_PROTOCOL) - 1 },
+};
+static const uint16_t verifiable_signature_algorithms[] = { PTLS_SIGNATURE_ED25519, UINT16_MAX };
+
+static void initCommonProfile(TlsProfile *self);
+static int acceptAnyClientCertificate(
+    ptls_verify_certificate_t *verifier,
+    ptls_t *tls,
+    const char *server_name,
+    int (**verify_sign)(void *verify_context, uint16_t algorithm, ptls_iovec_t data, ptls_iovec_t signature),
+    void **verify_data,
+    ptls_iovec_t *certificates,
+    size_t count
 );
+static int selectAlpnProtocol(ptls_on_client_hello_t *selector, ptls_t *tls, ptls_on_client_hello_parameters_t *parameters);
+static EVP_PKEY *readPrivateKey(const char *key_path);
 
 /* ---------- public ---------- */
 
-SSL_CTX *TlsDefaults_NewContext(const SSL_METHOD *method)
+bool TlsDefaults_InitClientProfile(TlsProfile *self)
 {
-    SSL_CTX *context = SSL_CTX_new(method);
+    initCommonProfile(self);
 
-    if (context == NULL) {
-        return NULL;
-    }
-
-    if (SSL_CTX_set_min_proto_version(context, TLS1_3_VERSION) != 1
-        || SSL_CTX_set_max_proto_version(context, TLS1_3_VERSION) != 1) {
-        SSL_CTX_free(context);
-        return NULL;
-    }
-#if defined(CAN_HUB_TLS_BORINGSSL)
-    // BoringSSL and its forks fix the TLS 1.3 suites, so there is nothing to
-    // pin. They also leave ED25519 out of the default signature preferences,
-    // which makes a handshake between two ED25519 identities fail with
-    // NO_COMMON_SIGNATURE_ALGORITHMS unless it is asked for on both sides:
-    // signing with our own key, and accepting the peer's.
-    {
-        static const uint16_t signature_algorithms[] = { SSL_SIGN_ED25519 };
-
-        if (SSL_CTX_set_signing_algorithm_prefs(context, signature_algorithms, 1) != 1
-            || SSL_CTX_set_verify_algorithm_prefs(context, signature_algorithms, 1) != 1) {
-            SSL_CTX_free(context);
-            return NULL;
-        }
-    }
-#else
-    if (SSL_CTX_set_ciphersuites(context, TLS13_CIPHERSUITES) != 1) {
-        SSL_CTX_free(context);
-        return NULL;
-    }
-#endif
-
-    return context;
+    return true;
 }
 
-bool TlsDefaults_LoadIdentity(SSL_CTX *context, const char *certificate_path, const char *key_path)
+bool TlsDefaults_InitServerProfile(TlsProfile *self, TlsPeerResolver resolve_peer)
 {
-    return SSL_CTX_use_certificate_chain_file(context, certificate_path) == 1
-        && SSL_CTX_use_PrivateKey_file(context, key_path, SSL_FILETYPE_PEM) == 1;
+    initCommonProfile(self);
+
+    self->resolve_peer = resolve_peer;
+
+    self->client_certificate_acceptor.cb = acceptAnyClientCertificate;
+    self->client_certificate_acceptor.algos = verifiable_signature_algorithms;
+    self->alpn_selector.cb = selectAlpnProtocol;
+    self->context.verify_certificate = &self->client_certificate_acceptor;
+    self->context.on_client_hello = &self->alpn_selector;
+    self->context.require_client_authentication = 1;
+
+    return true;
 }
 
-void TlsDefaults_ConfigureServerContext(SSL_CTX *context)
+bool TlsDefaults_LoadIdentity(TlsProfile *self, const char *certificate_path, const char *key_path)
 {
-    SSL_CTX_set_verify(context, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
-    SSL_CTX_set_cert_verify_callback(context, acceptAnyClientCertificate, NULL);
-    SSL_CTX_set_alpn_select_cb(context, selectAlpnProtocol, NULL);
+    EVP_PKEY *key;
+    bool loaded;
+
+    if (ptls_load_certificates(&self->context, certificate_path) != 0) {
+        return false;
+    }
+
+    key = readPrivateKey(key_path);
+    if (key == NULL) {
+        return false;
+    }
+
+    loaded = ptls_openssl_init_sign_certificate(&self->signer, key) == 0;
+    EVP_PKEY_free(key);
+    if (!loaded) {
+        return false;
+    }
+
+    self->context.sign_certificate = &self->signer.super;
+    self->has_signer = true;
+
+    return true;
 }
 
-void TlsDefaults_ConfigureClientSession(SSL *ssl, const char *server_host)
+void TlsDefaults_FreeProfile(TlsProfile *self)
 {
-    SSL_set_alpn_protos(ssl, alpn_wire, sizeof(alpn_wire));
-    SSL_set_tlsext_host_name(ssl, server_host);
-    SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    SSL_set_connect_state(ssl);
+    size_t i;
+
+    if (self->has_signer) {
+        ptls_openssl_dispose_sign_certificate(&self->signer);
+        self->has_signer = false;
+    }
+    for(i=0; i<self->context.certificates.count; i++) {
+        free(self->context.certificates.list[i].base);
+    }
+    free(self->context.certificates.list);
+    self->context.certificates.list = NULL;
+    self->context.certificates.count = 0;
 }
 
-void TlsDefaults_ConfigureServerSession(SSL *ssl)
+void TlsDefaults_ConfigureClientHandshake(ptls_handshake_properties_t *properties)
 {
-    SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    SSL_set_accept_state(ssl);
+    memset(properties, 0, sizeof(*properties));
+    properties->client.negotiated_protocols.list = (ptls_iovec_t *)alpn_protocols;
+    properties->client.negotiated_protocols.count = 1;
 }
 
 /* ---------- private ---------- */
 
-static int acceptAnyClientCertificate(X509_STORE_CTX *store_context, void *argument)
+static void initCommonProfile(TlsProfile *self)
 {
-    (void)store_context;
-    (void)argument;
-
-    return 1;
+    memset(self, 0, sizeof(*self));
+    self->context.random_bytes = ptls_openssl_random_bytes;
+    self->context.get_time = &ptls_get_time;
+    self->context.key_exchanges = ptls_openssl_key_exchanges;
+    self->context.cipher_suites = ptls_openssl_cipher_suites;
 }
 
-static int selectAlpnProtocol(
-    SSL *ssl,
-    const unsigned char **out,
-    unsigned char *out_length,
-    const unsigned char *in,
-    unsigned int in_length,
-    void *argument
+static int acceptAnyClientCertificate(
+    ptls_verify_certificate_t *verifier,
+    ptls_t *tls,
+    const char *server_name,
+    int (**verify_sign)(void *verify_context, uint16_t algorithm, ptls_iovec_t data, ptls_iovec_t signature),
+    void **verify_data,
+    ptls_iovec_t *certificates,
+    size_t count
 )
 {
-    (void)ssl;
-    (void)argument;
+    TlsProfile *profile = (TlsProfile *)((uint8_t *)verifier - offsetof(TlsProfile, client_certificate_acceptor));
+    TlsPeerCertificate *peer = profile->resolve_peer(tls);
 
-    if (SSL_select_next_proto((unsigned char **)out, out_length, alpn_wire, sizeof(alpn_wire), in, in_length)
-        != OPENSSL_NPN_NEGOTIATED) {
-        return SSL_TLSEXT_ERR_ALERT_FATAL;
+    (void)server_name;
+
+    if (peer == NULL) {
+        return PTLS_ALERT_INTERNAL_ERROR;
+    }
+    if (!TlsPeerCertificate_Accept(peer, certificates, count)) {
+        return PTLS_ALERT_BAD_CERTIFICATE;
     }
 
-    return SSL_TLSEXT_ERR_OK;
+    *verify_sign = TlsPeerCertificate_VerifySignature;
+    *verify_data = peer;
+
+    return 0;
+}
+
+static int selectAlpnProtocol(ptls_on_client_hello_t *selector, ptls_t *tls, ptls_on_client_hello_parameters_t *parameters)
+{
+    size_t i;
+
+    (void)selector;
+
+    for(i=0; i<parameters->negotiated_protocols.count; i++) {
+        if (parameters->negotiated_protocols.list[i].len == alpn_protocols[0].len
+            && memcmp(parameters->negotiated_protocols.list[i].base, alpn_protocols[0].base, alpn_protocols[0].len) == 0) {
+            return ptls_set_negotiated_protocol(tls, ALPN_PROTOCOL, alpn_protocols[0].len);
+        }
+    }
+
+    return PTLS_ALERT_NO_APPLICATION_PROTOCOL;
+}
+
+static EVP_PKEY *readPrivateKey(const char *key_path)
+{
+    FILE *file = fopen(key_path, "r");
+    EVP_PKEY *key;
+
+    if (file == NULL) {
+        return NULL;
+    }
+    key = PEM_read_PrivateKey(file, NULL, NULL, NULL);
+    fclose(file);
+
+    return key;
 }

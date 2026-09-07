@@ -396,15 +396,13 @@ static QuicServerPeer *acceptPeer(
     peer->remote_address_length = address_length;
     peer->peer_id = self->next_peer_id++;
 
-    if (!QuicServerSecurity_NewSession(&self->security, &peer->ssl, &peer->tls_context, QuicConnection_Ref(&peer->connection))) {
+    if (!QuicServerSecurity_NewSession(&self->security, &peer->session, QuicConnection_Ref(&peer->connection))) {
         return NULL;
     }
 
     makePeerPath(self, peer, &path);
-    if (!QuicConnection_OpenServer(&peer->connection, peer->tls_context, &path, &initial_header)) {
-        QuicServerSecurity_FreeSession(peer->ssl, peer->tls_context);
-        peer->ssl = NULL;
-        peer->tls_context = NULL;
+    if (!QuicConnection_OpenServer(&peer->connection, &peer->session.tls_context, &path, &initial_header)) {
+        QuicServerSecurity_FreeSession(&peer->session);
         return NULL;
     }
 
@@ -527,10 +525,8 @@ static void teardownPeer(QuicServerTransport *self, QuicServerPeer *peer, bool n
     bool was_connected = peer->connected;
     uint32_t peer_id = peer->peer_id;
 
-    QuicServerSecurity_FreeSession(peer->ssl, peer->tls_context);
+    QuicServerSecurity_FreeSession(&peer->session);
     QuicConnection_Close(&peer->connection);
-    peer->ssl = NULL;
-    peer->tls_context = NULL;
     QuicControlChannel_Reset(&peer->control);
     QuicReliableStreams_Reset(&peer->reliable_streams);
     peer->connected = false;
@@ -545,7 +541,12 @@ static void teardownPeer(QuicServerTransport *self, QuicServerPeer *peer, bool n
 
 static void capturePeerFingerprint(QuicServerPeer *peer)
 {
-    TlsIdentity_FingerprintOfPeer(peer->ssl, peer->fingerprint_hex);
+    snprintf(
+        peer->fingerprint_hex,
+        TLS_IDENTITY_FINGERPRINT_HEX_SIZE,
+        "%s",
+        QuicConnection_PeerCertificate(&peer->connection)->fingerprint
+    );
 }
 
 static void dispatchControlMessages(QuicServerTransport *self, QuicServerPeer *peer)

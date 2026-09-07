@@ -2,10 +2,10 @@
 
 #include <string.h>
 
-#include "platform/linux/shared/tls_defaults.h"
+#include "platform/linux/quic/quic_connection.h"
 
 static bool loadClientIdentity(QuicClientSecurity *self, const QuicClientSecurityConfig *config);
-static bool cryptoBackendReady(void);
+static void attachVerifier(QuicClientSecurity *self, const QuicClientSecurityConfig *config);
 
 /* ---------- public ---------- */
 
@@ -18,14 +18,10 @@ bool QuicClientSecurity_Init(
 {
     memset(self, 0, sizeof(*self));
 
-    if (!cryptoBackendReady()) {
+    if (!TlsDefaults_InitClientProfile(&self->profile)) {
         return false;
     }
-    self->context = TlsDefaults_NewContext(TLS_client_method());
-    if (self->context == NULL) {
-        return false;
-    }
-    if (!QuicTlsBackend_ConfigureClientContext(self->context)) {
+    if (ngtcp2_crypto_picotls_configure_client_context(&self->profile.context) != 0) {
         QuicClientSecurity_Free(self);
         return false;
     }
@@ -33,42 +29,42 @@ bool QuicClientSecurity_Init(
         QuicClientSecurity_Free(self);
         return false;
     }
-    if (config != NULL && config->pinned_fingerprint != NULL) {
-        PinnedServerVerifier_AttachFixed(&self->verifier, self->context, config->pinned_fingerprint);
-    } else if (config != NULL && config->pin_store_path != NULL && config->pin_key != NULL) {
-        PinnedServerVerifier_Attach(&self->verifier, self->context, config->pin_store_path, config->pin_key);
-    }
+    attachVerifier(self, config);
 
-    self->ssl = SSL_new(self->context);
-    if (self->ssl == NULL) {
-        QuicClientSecurity_Free(self);
-        return false;
-    }
-    if (!QuicTlsBackend_NewSession(&self->tls_context, self->ssl, false)) {
+    ngtcp2_crypto_picotls_ctx_init(&self->tls_context);
+    self->tls_context.ptls = ptls_new(&self->profile.context, 0);
+    if (self->tls_context.ptls == NULL) {
         QuicClientSecurity_Free(self);
         return false;
     }
 
-    SSL_set_app_data(self->ssl, connection_ref);
-    TlsDefaults_ConfigureClientSession(self->ssl, server_host);
+    *ptls_get_data_ptr(self->tls_context.ptls) = connection_ref;
+    TlsDefaults_ConfigureClientHandshake(&self->tls_context.handshake_properties);
+    if (server_host != NULL && ptls_set_server_name(self->tls_context.ptls, server_host, 0) != 0) {
+        QuicClientSecurity_Free(self);
+        return false;
+    }
 
     return true;
 }
 
+bool QuicClientSecurity_AttachConnection(QuicClientSecurity *self, ngtcp2_conn *connection)
+{
+    self->extensions[0].type = UINT16_MAX;
+    self->extensions[1].type = UINT16_MAX;
+    self->tls_context.handshake_properties.additional_extensions = self->extensions;
+
+    return ngtcp2_crypto_picotls_configure_client_session(&self->tls_context, connection) == 0;
+}
+
 void QuicClientSecurity_Free(QuicClientSecurity *self)
 {
-    if (self->tls_context != NULL) {
-        QuicTlsBackend_FreeSession(self->tls_context);
-        self->tls_context = NULL;
+    if (self->tls_context.ptls != NULL) {
+        ngtcp2_crypto_picotls_deconfigure_session(&self->tls_context);
+        ptls_free(self->tls_context.ptls);
+        self->tls_context.ptls = NULL;
     }
-    if (self->ssl != NULL) {
-        SSL_free(self->ssl);
-        self->ssl = NULL;
-    }
-    if (self->context != NULL) {
-        SSL_CTX_free(self->context);
-        self->context = NULL;
-    }
+    TlsDefaults_FreeProfile(&self->profile);
 }
 
 /* ---------- private ---------- */
@@ -79,10 +75,31 @@ static bool loadClientIdentity(QuicClientSecurity *self, const QuicClientSecurit
         return true;
     }
 
-    return TlsDefaults_LoadIdentity(self->context, config->certificate_path, config->key_path);
+    return TlsDefaults_LoadIdentity(&self->profile, config->certificate_path, config->key_path);
 }
 
-static bool cryptoBackendReady(void)
+static void attachVerifier(QuicClientSecurity *self, const QuicClientSecurityConfig *config)
 {
-    return QuicTlsBackend_Ready();
+    if (config == NULL) {
+        return;
+    }
+
+    if (config->pinned_fingerprint != NULL) {
+        PinnedServerVerifier_AttachFixed(
+            &self->verifier,
+            &self->profile.context,
+            QuicConnection_PeerCertificateOfSession,
+            config->pinned_fingerprint
+        );
+        return;
+    }
+    if (config->pin_store_path != NULL && config->pin_key != NULL) {
+        PinnedServerVerifier_Attach(
+            &self->verifier,
+            &self->profile.context,
+            QuicConnection_PeerCertificateOfSession,
+            config->pin_store_path,
+            config->pin_key
+        );
+    }
 }

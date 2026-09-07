@@ -14,18 +14,10 @@ add_compile_options(-Wall -Wextra)
 
 option(CAN_HUB_STATIC "Fully static binaries against a static OpenSSL stack" OFF)
 
-# openssl (default) or awslc. AWS-LC is Apache-2.0/ISC and yields a far smaller
-# binary; see cmake/awslc.cmake. Reject anything else rather than silently
-# falling back, and say so when a combination is not wired up yet.
-set(CAN_HUB_TLS_BACKEND "openssl" CACHE STRING "TLS backend: openssl | awslc")
-if(NOT CAN_HUB_TLS_BACKEND MATCHES "^(openssl|awslc)$")
-    message(FATAL_ERROR "CAN_HUB_TLS_BACKEND must be openssl or awslc, got '${CAN_HUB_TLS_BACKEND}'")
-endif()
-if(CAN_HUB_STATIC AND CAN_HUB_TLS_BACKEND STREQUAL "awslc")
-    message(FATAL_ERROR "CAN_HUB_STATIC builds against the sysroot OpenSSL; the awslc backend is not wired into it yet")
-endif()
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND CAN_HUB_TLS_BACKEND STREQUAL "awslc")
-    message(FATAL_ERROR "the awslc backend is not wired into the windows build yet")
+include(ProcessorCount)
+ProcessorCount(CAN_HUB_BUILD_PARALLELISM)
+if(CAN_HUB_BUILD_PARALLELISM EQUAL 0)
+    set(CAN_HUB_BUILD_PARALLELISM 1)
 endif()
 if(CAN_HUB_STATIC)
     add_compile_options(-ffunction-sections -fdata-sections)
@@ -36,22 +28,20 @@ if(CAN_HUB_STATIC)
     set(OPENSSL_ROOT_DIR "$ENV{CAN_HUB_SYSROOT}")
     set(OPENSSL_USE_STATIC_LIBS TRUE)
     find_package(OpenSSL REQUIRED)
-elseif(CAN_HUB_TLS_BACKEND STREQUAL "awslc")
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/awslc.cmake)
 else()
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/openssl.cmake)
 endif()
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/picotls.cmake)
 
 include_directories(src)
 
 include(FetchContent)
 set(ENABLE_GNUTLS OFF CACHE BOOL "" FORCE)
-if(CAN_HUB_TLS_BACKEND STREQUAL "awslc")
-    set(ENABLE_OPENSSL OFF CACHE BOOL "" FORCE)
-    set(ENABLE_BORINGSSL ON CACHE BOOL "" FORCE)
-else()
-    set(ENABLE_OPENSSL ON CACHE BOOL "" FORCE)
-endif()
+set(ENABLE_OPENSSL OFF CACHE BOOL "" FORCE)
+set(ENABLE_PICOTLS ON CACHE BOOL "" FORCE)
+set(VANILLA_OPENSSL_INCLUDE_DIRS "${CAN_HUB_OPENSSL_PREFIX}/include" CACHE STRING "" FORCE)
+set(VANILLA_OPENSSL_LIBRARIES "${CAN_HUB_OPENSSL_PREFIX}/lib/libssl.a;${CAN_HUB_OPENSSL_PREFIX}/lib/libcrypto.a" CACHE STRING "" FORCE)
 set(ENABLE_SHARED_LIB OFF CACHE BOOL "" FORCE)
 set(ENABLE_STATIC_LIB ON CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -64,12 +54,7 @@ FetchContent_MakeAvailable(ngtcp2)
 # One name for "the TLS stack and its ngtcp2 backend", so the link lines below
 # do not have to know which one is in play.
 add_library(can_hub_tls INTERFACE)
-if(CAN_HUB_TLS_BACKEND STREQUAL "awslc")
-    target_link_libraries(can_hub_tls INTERFACE ngtcp2_crypto_boringssl_static awslc)
-    target_compile_definitions(can_hub_tls INTERFACE CAN_HUB_TLS_BORINGSSL)
-else()
-    target_link_libraries(can_hub_tls INTERFACE ngtcp2_crypto_ossl_static OpenSSL::SSL OpenSSL::Crypto)
-endif()
+target_link_libraries(can_hub_tls INTERFACE ngtcp2_crypto_picotls_static picotls OpenSSL::SSL OpenSSL::Crypto)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(LIBCANHUB_WINDOWS_SOURCES
@@ -92,6 +77,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         src/platform/linux/shared/pin_store.c
         src/platform/linux/shared/pinned_server_verifier.c
         src/platform/linux/shared/tls_defaults.c
+        src/platform/linux/shared/tls_peer_certificate.c
         src/platform/linux/tls/tls_channel.c
         src/platform/linux/tls/tls_client_security.c
         src/platform/linux/quic/quic_client_security.c
@@ -169,6 +155,7 @@ set(AGENT_SOURCES
     src/platform/linux/shared/tls_defaults.c
     src/platform/linux/shared/tls_identity.c
     src/platform/linux/shared/tls_identity_openssl.c
+    src/platform/linux/shared/tls_peer_certificate.c
     src/platform/linux/shared/message_framer.c
     src/platform/linux/socketcan/socketcan_adapter.c
     src/platform/linux/socketcan/can_netlink.c
@@ -206,6 +193,7 @@ set(HUB_SOURCES
     src/platform/linux/shared/tls_defaults.c
     src/platform/linux/shared/tls_identity.c
     src/platform/linux/shared/tls_identity_openssl.c
+    src/platform/linux/shared/tls_peer_certificate.c
     src/platform/linux/shared/message_framer.c
     src/platform/linux/tcp/tcp_channel.c
     src/platform/linux/tcp/tcp_server_transport.c
@@ -248,6 +236,7 @@ set(CLIENT_TLS_SOURCES
     src/platform/linux/shared/tls_defaults.c
     src/platform/linux/shared/tls_identity.c
     src/platform/linux/shared/tls_identity_openssl.c
+    src/platform/linux/shared/tls_peer_certificate.c
     src/platform/linux/tls/tls_channel.c
     src/platform/linux/tls/tls_client_security.c
     src/platform/linux/tls/tls_client_transport.c

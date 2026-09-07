@@ -189,11 +189,12 @@ add_unit_test(test_tls_channel
         ${ROOT_SRC_DIR}/platform/linux/shared/tls_defaults.c
         ${ROOT_SRC_DIR}/platform/linux/shared/tls_identity.c
         ${ROOT_SRC_DIR}/platform/linux/shared/tls_identity_openssl.c
+        ${ROOT_SRC_DIR}/platform/linux/shared/tls_peer_certificate.c
         ${ROOT_SRC_DIR}/platform/linux/shared/message_framer.c
         ${ROOT_SRC_DIR}/protocol/message_header.c
         ${ROOT_SRC_DIR}/protocol/wire.c
 )
-target_link_libraries(test_tls_channel PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(test_tls_channel PRIVATE picotls OpenSSL::SSL OpenSSL::Crypto)
 
 add_unit_test(test_identity_database
     SOURCES

@@ -1,6 +1,6 @@
 #include "platform/linux/tls/tls_client_security.h"
 
-#include "platform/linux/shared/tls_defaults.h"
+#include <string.h>
 
 static bool loadClientIdentity(TlsClientSecurity *self, const TlsClientSecurityConfig *config);
 
@@ -8,8 +8,9 @@ static bool loadClientIdentity(TlsClientSecurity *self, const TlsClientSecurityC
 
 bool TlsClientSecurity_Init(TlsClientSecurity *self, const TlsClientSecurityConfig *config)
 {
-    self->context = TlsDefaults_NewContext(TLS_client_method());
-    if (self->context == NULL) {
+    memset(self, 0, sizeof(*self));
+
+    if (!TlsDefaults_InitClientProfile(&self->profile)) {
         return false;
     }
     if (!loadClientIdentity(self, config)) {
@@ -18,32 +19,49 @@ bool TlsClientSecurity_Init(TlsClientSecurity *self, const TlsClientSecurityConf
     }
 
     if (config != NULL && config->pinned_fingerprint != NULL) {
-        PinnedServerVerifier_AttachFixed(&self->verifier, self->context, config->pinned_fingerprint);
+        PinnedServerVerifier_AttachFixed(
+            &self->verifier,
+            &self->profile.context,
+            TlsPeerCertificate_FromDataPointer,
+            config->pinned_fingerprint
+        );
     } else if (config != NULL && config->pin_store_path != NULL && config->pin_key != NULL) {
-        PinnedServerVerifier_Attach(&self->verifier, self->context, config->pin_store_path, config->pin_key);
+        PinnedServerVerifier_Attach(
+            &self->verifier,
+            &self->profile.context,
+            TlsPeerCertificate_FromDataPointer,
+            config->pin_store_path,
+            config->pin_key
+        );
     }
+    TlsDefaults_ConfigureClientHandshake(&self->handshake_properties);
 
     return true;
 }
 
 void TlsClientSecurity_Free(TlsClientSecurity *self)
 {
-    if (self->context != NULL) {
-        SSL_CTX_free(self->context);
-        self->context = NULL;
-    }
+    TlsDefaults_FreeProfile(&self->profile);
 }
 
-bool TlsClientSecurity_NewSession(TlsClientSecurity *self, const char *server_host, SSL **ssl)
+bool TlsClientSecurity_NewSession(TlsClientSecurity *self, const char *server_host, ptls_t **tls)
 {
-    *ssl = SSL_new(self->context);
-    if (*ssl == NULL) {
+    *tls = ptls_new(&self->profile.context, 0);
+    if (*tls == NULL) {
+        return false;
+    }
+    if (server_host != NULL && ptls_set_server_name(*tls, server_host, 0) != 0) {
+        ptls_free(*tls);
+        *tls = NULL;
         return false;
     }
 
-    TlsDefaults_ConfigureClientSession(*ssl, server_host);
-
     return true;
+}
+
+const ptls_handshake_properties_t *TlsClientSecurity_HandshakeProperties(const TlsClientSecurity *self)
+{
+    return &self->handshake_properties;
 }
 
 /* ---------- private ---------- */
@@ -54,5 +72,5 @@ static bool loadClientIdentity(TlsClientSecurity *self, const TlsClientSecurityC
         return true;
     }
 
-    return TlsDefaults_LoadIdentity(self->context, config->certificate_path, config->key_path);
+    return TlsDefaults_LoadIdentity(&self->profile, config->certificate_path, config->key_path);
 }

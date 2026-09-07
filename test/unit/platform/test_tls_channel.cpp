@@ -4,9 +4,7 @@
 #include <cstring>
 
 extern "C" {
-#include <sys/socket.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 #include "platform/linux/tls/tls_channel.h"
 #include "platform/linux/tls/tls_client_security.h"
@@ -20,6 +18,7 @@ extern "C" {
 #define PIN_KEY "localhost:7227"
 #define WRONG_FINGERPRINT "0000000000000000000000000000000000000000000000000000000000000000"
 #define PUMP_ROUNDS_MAX 64
+#define SHUTTLE_BUFFER_SIZE 32768
 
 static TlsServerSecurity server_security;
 static TlsClientSecurity client_security;
@@ -30,9 +29,10 @@ static char hub_key[TLS_IDENTITY_PATH_MAX];
 static char client_certificate[TLS_IDENTITY_PATH_MAX];
 static char client_key[TLS_IDENTITY_PATH_MAX];
 
-static bool startLoopbackPair(void);
+static bool startChannelPair(void);
 static bool pumpUntilEstablished(bool *client_failed);
-static void closeLoopbackPair(void);
+static bool shuttle(TlsChannel *from, TlsChannel *to, const MessageSink *sink);
+static void closeChannelPair(void);
 static void captureMessage(void *context, const uint8_t *message, size_t size);
 
 static uint8_t captured_message[256];
@@ -49,25 +49,25 @@ describe("tls_channel", []() {
     });
 
     afterEach([]() {
-        closeLoopbackPair();
+        closeChannelPair();
         TlsServerSecurity_Free(&server_security);
         TlsClientSecurity_Free(&client_security);
     });
 
-    it("completes a loopback handshake and carries a message", []() {
+    it("completes a handshake and carries a message", []() {
         const uint8_t message[] = { 0x7F, 0x00, 0x00, 0x00 };
         MessageSink sink = { NULL, captureMessage };
         bool client_failed = false;
         bool established;
 
-        expect(startLoopbackPair()).toBe(true);
+        expect(startChannelPair()).toBe(true);
         established = pumpUntilEstablished(&client_failed);
 
         expect(established).toBe(true);
         expect(TlsChannel_Queue(&client_channel, message, sizeof(message))).toBe(true);
         expect(TlsChannel_Flush(&client_channel)).toBe(true);
         captured_size = 0;
-        expect(TlsChannel_Receive(&server_channel, &sink)).toBe(true);
+        expect(shuttle(&client_channel, &server_channel, &sink)).toBe(true);
         expect(captured_size).toBe(sizeof(message));
         expect((const uint8_t *)captured_message).toEqualMemory(message, sizeof(message));
     });
@@ -76,7 +76,7 @@ describe("tls_channel", []() {
         char fingerprint[TLS_IDENTITY_FINGERPRINT_HEX_SIZE] = "";
         bool client_failed = false;
 
-        expect(startLoopbackPair()).toBe(true);
+        expect(startChannelPair()).toBe(true);
         expect(pumpUntilEstablished(&client_failed)).toBe(true);
 
         expect(TlsChannel_PeerFingerprint(&server_channel, fingerprint)).toBe(true);
@@ -88,7 +88,7 @@ describe("tls_channel", []() {
         char file_fingerprint[TLS_IDENTITY_FINGERPRINT_HEX_SIZE] = "";
         bool client_failed = false;
 
-        expect(startLoopbackPair()).toBe(true);
+        expect(startChannelPair()).toBe(true);
         expect(pumpUntilEstablished(&client_failed)).toBe(true);
 
         expect(TlsChannel_PeerFingerprint(&server_channel, handshake_fingerprint)).toBe(true);
@@ -100,7 +100,7 @@ describe("tls_channel", []() {
         char pinned[PIN_STORE_FINGERPRINT_HEX_SIZE];
         bool client_failed = false;
 
-        expect(startLoopbackPair()).toBe(true);
+        expect(startChannelPair()).toBe(true);
         expect(pumpUntilEstablished(&client_failed)).toBe(true);
 
         expect(PinStore_Lookup(PIN_STORE_PATH, PIN_KEY, pinned)).toBe(true);
@@ -111,7 +111,7 @@ describe("tls_channel", []() {
 
         PinStore_Append(PIN_STORE_PATH, PIN_KEY, WRONG_FINGERPRINT);
 
-        expect(startLoopbackPair()).toBe(true);
+        expect(startChannelPair()).toBe(true);
         pumpUntilEstablished(&client_failed);
 
         expect(client_failed).toBe(true);
@@ -121,12 +121,11 @@ describe("tls_channel", []() {
 
 /* ---------- private ---------- */
 
-static bool startLoopbackPair(void)
+static bool startChannelPair(void)
 {
     TlsClientSecurityConfig config;
-    SSL *server_session;
-    SSL *client_session;
-    int sockets[2];
+    ptls_t *server_session;
+    ptls_t *client_session;
 
     memset(&config, 0, sizeof(config));
     config.certificate_path = client_certificate;
@@ -140,9 +139,6 @@ static bool startLoopbackPair(void)
     if (!TlsClientSecurity_Init(&client_security, &config)) {
         return false;
     }
-    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sockets) != 0) {
-        return false;
-    }
     if (!TlsServerSecurity_NewSession(&server_security, &server_session)) {
         return false;
     }
@@ -150,8 +146,8 @@ static bool startLoopbackPair(void)
         return false;
     }
 
-    TlsChannel_Bind(&server_channel, sockets[0], server_session);
-    TlsChannel_Bind(&client_channel, sockets[1], client_session);
+    TlsChannel_Bind(&server_channel, server_session, NULL);
+    TlsChannel_Bind(&client_channel, client_session, TlsClientSecurity_HandshakeProperties(&client_security));
 
     return true;
 }
@@ -160,12 +156,17 @@ static bool pumpUntilEstablished(bool *client_failed)
 {
     uint8_t round;
 
+    if (!TlsChannel_Pump(&client_channel)) {
+        *client_failed = true;
+        return false;
+    }
+
     for(round=0; round<PUMP_ROUNDS_MAX; round++) {
-        if (!TlsChannel_Pump(&client_channel)) {
-            *client_failed = true;
+        if (!shuttle(&client_channel, &server_channel, NULL)) {
             return false;
         }
-        if (!TlsChannel_Pump(&server_channel)) {
+        if (!shuttle(&server_channel, &client_channel, NULL)) {
+            *client_failed = true;
             return false;
         }
         if (TlsChannel_IsEstablished(&client_channel) && TlsChannel_IsEstablished(&server_channel)) {
@@ -176,19 +177,39 @@ static bool pumpUntilEstablished(bool *client_failed)
     return false;
 }
 
-static void closeLoopbackPair(void)
+static bool shuttle(TlsChannel *from, TlsChannel *to, const MessageSink *sink)
 {
-    int32_t server_fd = server_channel.fd;
-    int32_t client_fd = client_channel.fd;
+    uint8_t buffer[SHUTTLE_BUFFER_SIZE];
+    size_t size = TlsChannel_PendingCiphertext(from);
+    size_t offset = 0;
+    size_t consumed;
 
+    if (size == 0) {
+        return true;
+    }
+    if (size > sizeof(buffer)) {
+        return false;
+    }
+    memcpy(buffer, TlsChannel_Ciphertext(from), size);
+    TlsChannel_ConsumeCiphertext(from, size);
+
+    while (offset < size) {
+        if (!TlsChannel_PushCiphertext(to, buffer + offset, size - offset, &consumed, sink)) {
+            return false;
+        }
+        offset += consumed;
+        if (consumed == 0) {
+            return true;
+        }
+    }
+
+    return true;
+}
+
+static void closeChannelPair(void)
+{
     TlsChannel_Close(&server_channel);
     TlsChannel_Close(&client_channel);
-    if (server_fd >= 0) {
-        close(server_fd);
-    }
-    if (client_fd >= 0) {
-        close(client_fd);
-    }
 }
 
 static void captureMessage(void *context, const uint8_t *message, size_t size)

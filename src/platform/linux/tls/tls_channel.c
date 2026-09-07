@@ -2,44 +2,54 @@
 
 #include <string.h>
 
-#include <openssl/x509.h>
+#define PLAINTEXT_CHUNK_SIZE 4096
 
-#include "platform/linux/shared/tls_identity.h"
-
-#define READ_CHUNK_SIZE 2048
-
-static bool handleSslError(TlsChannel *self, int32_t error);
+static bool advanceHandshake(TlsChannel *self, const uint8_t *data, size_t *size);
+static bool decryptAndFrame(
+    TlsChannel *self,
+    const uint8_t *data,
+    size_t size,
+    size_t *consumed,
+    const MessageSink *sink
+);
+static bool drainPlaintext(TlsChannel *self, const uint8_t *plaintext, size_t size, const MessageSink *sink);
 
 /* ---------- public ---------- */
 
 void TlsChannel_Reset(TlsChannel *self)
 {
     memset(self, 0, sizeof(*self));
-    self->fd = TLS_CHANNEL_NO_SOCKET;
     MessageFramer_Reset(&self->framer);
+    TlsPeerCertificate_Reset(&self->peer);
+    ptls_buffer_init(&self->ciphertext, self->ciphertext_storage, sizeof(self->ciphertext_storage));
 }
 
-void TlsChannel_Bind(TlsChannel *self, int32_t fd, SSL *ssl)
+bool TlsChannel_Bind(TlsChannel *self, ptls_t *tls, const ptls_handshake_properties_t *properties)
 {
     TlsChannel_Reset(self);
-    self->fd = fd;
-    self->ssl = ssl;
+    self->tls = tls;
     self->state = kTLS_CHANNEL_STATE_HANDSHAKING;
-    SSL_set_fd(ssl, fd);
+    if (properties != NULL) {
+        self->handshake_properties = *properties;
+    }
+    *ptls_get_data_ptr(tls) = &self->peer;
+
+    return true;
 }
 
 void TlsChannel_Close(TlsChannel *self)
 {
-    if (self->ssl != NULL) {
-        SSL_free(self->ssl);
+    if (self->tls != NULL) {
+        ptls_free(self->tls);
     }
+    ptls_buffer_dispose(&self->ciphertext);
 
     TlsChannel_Reset(self);
 }
 
 bool TlsChannel_IsBound(const TlsChannel *self)
 {
-    return self->fd != TLS_CHANNEL_NO_SOCKET;
+    return self->tls != NULL;
 }
 
 bool TlsChannel_IsEstablished(const TlsChannel *self)
@@ -49,53 +59,49 @@ bool TlsChannel_IsEstablished(const TlsChannel *self)
 
 bool TlsChannel_Pump(TlsChannel *self)
 {
-    int32_t result;
-
-    if (self->state != kTLS_CHANNEL_STATE_HANDSHAKING) {
+    if (self->state != kTLS_CHANNEL_STATE_HANDSHAKING || ptls_is_server(self->tls)) {
         return true;
     }
 
-    result = SSL_do_handshake(self->ssl);
-    if (result == 1) {
-        self->state = kTLS_CHANNEL_STATE_ESTABLISHED;
-        self->want_write = false;
-        return true;
-    }
-
-    return handleSslError(self, SSL_get_error(self->ssl, result));
+    return advanceHandshake(self, NULL, NULL);
 }
 
-bool TlsChannel_Receive(TlsChannel *self, const MessageSink *sink)
+bool TlsChannel_PushCiphertext(
+    TlsChannel *self,
+    const uint8_t *data,
+    size_t size,
+    size_t *consumed,
+    const MessageSink *sink
+)
 {
-    uint8_t chunk[READ_CHUNK_SIZE];
-    size_t bytes_received;
-    size_t offset;
-    size_t taken;
-    int32_t result;
+    *consumed = size;
 
-    if (self->state != kTLS_CHANNEL_STATE_ESTABLISHED) {
-        return true;
+    if (self->state == kTLS_CHANNEL_STATE_HANDSHAKING) {
+        return advanceHandshake(self, data, consumed);
     }
 
-    for (;;) {
-        result = SSL_read_ex(self->ssl, chunk, sizeof(chunk), &bytes_received);
-        if (result != 1) {
-            return handleSslError(self, SSL_get_error(self->ssl, result));
-        }
+    return decryptAndFrame(self, data, size, consumed, sink);
+}
 
-        offset = 0;
-        while (offset < bytes_received) {
-            taken = MessageFramer_Push(&self->framer, chunk + offset, bytes_received - offset);
-            offset += taken;
-            MessageFramer_Drain(&self->framer, sink);
-            if (!TlsChannel_IsBound(self)) {
-                return true;
-            }
-            if (taken == 0) {
-                return false;
-            }
-        }
+size_t TlsChannel_PendingCiphertext(const TlsChannel *self)
+{
+    return self->ciphertext.off;
+}
+
+const uint8_t *TlsChannel_Ciphertext(const TlsChannel *self)
+{
+    return self->ciphertext.base;
+}
+
+void TlsChannel_ConsumeCiphertext(TlsChannel *self, size_t size)
+{
+    if (size >= self->ciphertext.off) {
+        self->ciphertext.off = 0;
+        return;
     }
+
+    memmove(self->ciphertext.base, self->ciphertext.base + size, self->ciphertext.off - size);
+    self->ciphertext.off -= size;
 }
 
 size_t TlsChannel_FreeTxSpace(const TlsChannel *self)
@@ -117,53 +123,102 @@ bool TlsChannel_Queue(TlsChannel *self, const uint8_t *data, size_t size)
 
 bool TlsChannel_Flush(TlsChannel *self)
 {
-    size_t bytes_sent;
-    int32_t result;
-
-    if (self->state != kTLS_CHANNEL_STATE_ESTABLISHED) {
+    if (self->state != kTLS_CHANNEL_STATE_ESTABLISHED || self->tx_used == 0) {
         return true;
     }
 
-    while (self->tx_used > 0) {
-        result = SSL_write_ex(self->ssl, self->tx_backlog, self->tx_used, &bytes_sent);
-        if (result != 1) {
-            return handleSslError(self, SSL_get_error(self->ssl, result));
-        }
-
-        memmove(self->tx_backlog, self->tx_backlog + bytes_sent, self->tx_used - bytes_sent);
-        self->tx_used -= bytes_sent;
+    if (ptls_send(self->tls, &self->ciphertext, self->tx_backlog, self->tx_used) != 0) {
+        return false;
     }
-    self->want_write = false;
+    self->tx_used = 0;
 
     return true;
 }
 
 bool TlsChannel_WantsWrite(const TlsChannel *self)
 {
-    if (self->state == kTLS_CHANNEL_STATE_HANDSHAKING) {
-        return self->want_write;
-    }
-
-    return self->tx_used > 0 || self->want_write;
+    return self->ciphertext.off > 0;
 }
 
 bool TlsChannel_PeerFingerprint(const TlsChannel *self, char *fingerprint_hex)
 {
-    return TlsIdentity_FingerprintOfPeer(self->ssl, fingerprint_hex);
+    if (!self->peer.loaded) {
+        return false;
+    }
+    memcpy(fingerprint_hex, self->peer.fingerprint, TLS_IDENTITY_FINGERPRINT_HEX_SIZE);
+
+    return true;
 }
 
 /* ---------- private ---------- */
 
-static bool handleSslError(TlsChannel *self, int32_t error)
+static bool advanceHandshake(TlsChannel *self, const uint8_t *data, size_t *size)
 {
-    if (error == SSL_ERROR_WANT_READ) {
-        self->want_write = false;
-        return true;
-    }
-    if (error == SSL_ERROR_WANT_WRITE) {
-        self->want_write = true;
+    int result;
+
+    result = ptls_handshake(self->tls, &self->ciphertext, data, size, &self->handshake_properties);
+    if (result == 0) {
+        self->state = kTLS_CHANNEL_STATE_ESTABLISHED;
         return true;
     }
 
-    return false;
+    return result == PTLS_ERROR_IN_PROGRESS;
+}
+
+static bool decryptAndFrame(
+    TlsChannel *self,
+    const uint8_t *data,
+    size_t size,
+    size_t *consumed,
+    const MessageSink *sink
+)
+{
+    uint8_t storage[PLAINTEXT_CHUNK_SIZE];
+    ptls_buffer_t plaintext;
+    size_t offset = 0;
+    size_t taken;
+    bool drained = true;
+
+    ptls_buffer_init(&plaintext, storage, sizeof(storage));
+
+    while (offset < size) {
+        taken = size - offset;
+        if (ptls_receive(self->tls, &plaintext, data + offset, &taken) != 0) {
+            ptls_buffer_dispose(&plaintext);
+            *consumed = offset;
+            return false;
+        }
+        offset += taken;
+        if (taken == 0) {
+            break;
+        }
+    }
+    *consumed = offset;
+
+    if (plaintext.off > 0) {
+        drained = drainPlaintext(self, plaintext.base, plaintext.off, sink);
+    }
+    ptls_buffer_dispose(&plaintext);
+
+    return drained;
+}
+
+static bool drainPlaintext(TlsChannel *self, const uint8_t *plaintext, size_t size, const MessageSink *sink)
+{
+    size_t offset = 0;
+    size_t taken;
+
+    while (offset < size) {
+        taken = MessageFramer_Push(&self->framer, plaintext + offset, size - offset);
+        offset += taken;
+        MessageFramer_Drain(&self->framer, sink);
+        if (!TlsChannel_IsBound(self)) {
+            return true;
+        }
+        if (taken == 0) {
+            return false;
+        }
+    }
+
+    return true;
 }

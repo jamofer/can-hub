@@ -28,6 +28,7 @@ typedef struct {
     char host[TLS_CLIENT_HOST_MAX];
     char port_text[TLS_CLIENT_PORT_TEXT_MAX];
     TlsChannel channel;
+    int32_t fd;
     bool connecting;
     bool announced;
 } TlsClientTransport;

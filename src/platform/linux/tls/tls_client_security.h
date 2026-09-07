@@ -2,14 +2,16 @@
 
 #include <stdbool.h>
 
-#include <openssl/ssl.h>
+#include <picotls.h>
 
 #include "platform/linux/shared/pinned_server_verifier.h"
+#include "platform/linux/shared/tls_defaults.h"
 
 /*
- * TLS side of a client connection over TCP: OpenSSL context + sessions.
- * Presents the local identity certificate (mTLS, required by the hub) and
- * verifies the hub against the TOFU pin store through PinnedServerVerifier.
+ * Client-side TLS material for one transport: the picotls context carrying
+ * the can-hub profile and, when configured, the client identity presented
+ * for mTLS plus the TOFU verifier applied to the hub certificate. Sessions
+ * are minted from it per connection attempt.
  */
 
 typedef struct {
@@ -21,10 +23,12 @@ typedef struct {
 } TlsClientSecurityConfig;
 
 typedef struct {
-    SSL_CTX *context;
+    TlsProfile profile;
     PinnedServerVerifier verifier;
+    ptls_handshake_properties_t handshake_properties;
 } TlsClientSecurity;
 
 bool TlsClientSecurity_Init(TlsClientSecurity *self, const TlsClientSecurityConfig *config);
 void TlsClientSecurity_Free(TlsClientSecurity *self);
-bool TlsClientSecurity_NewSession(TlsClientSecurity *self, const char *server_host, SSL **ssl);
+bool TlsClientSecurity_NewSession(TlsClientSecurity *self, const char *server_host, ptls_t **tls);
+const ptls_handshake_properties_t *TlsClientSecurity_HandshakeProperties(const TlsClientSecurity *self);

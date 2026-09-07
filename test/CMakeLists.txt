@@ -13,6 +13,10 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
 find_package(OpenSSL REQUIRED)
 
+get_filename_component(ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+set(CAN_HUB_ROOT_DIR "${ROOT_DIR}")
+include(${ROOT_DIR}/cmake/picotls.cmake)
+
 include(FetchContent)
 FetchContent_Declare(sqlite3
     URL https://sqlite.org/2026/sqlite-amalgamation-3530200.zip

@@ -1,76 +1,69 @@
 #include "platform/linux/quic/quic_server_security.h"
 
-#include "platform/linux/shared/tls_defaults.h"
+#include <string.h>
 
-static bool cryptoBackendReady(void);
+#include "platform/linux/quic/quic_connection.h"
 
 /* ---------- public ---------- */
 
 bool QuicServerSecurity_Init(QuicServerSecurity *self, const char *certificate_file, const char *key_file)
 {
-    if (!cryptoBackendReady()) {
-        return false;
-    }
+    memset(self, 0, sizeof(*self));
 
-    self->context = TlsDefaults_NewContext(TLS_server_method());
-    if (self->context == NULL) {
+    if (!TlsDefaults_InitServerProfile(&self->profile, QuicConnection_PeerCertificateOfSession)) {
         return false;
     }
-
-    if (!TlsDefaults_LoadIdentity(self->context, certificate_file, key_file)) {
-        SSL_CTX_free(self->context);
-        self->context = NULL;
+    if (ngtcp2_crypto_picotls_configure_server_context(&self->profile.context) != 0) {
+        QuicServerSecurity_Free(self);
         return false;
     }
-    TlsDefaults_ConfigureServerContext(self->context);
-    if (!QuicTlsBackend_ConfigureServerContext(self->context)) {
-        SSL_CTX_free(self->context);
-        self->context = NULL;
+    if (!TlsDefaults_LoadIdentity(&self->profile, certificate_file, key_file)) {
+        QuicServerSecurity_Free(self);
         return false;
     }
 
     return true;
+}
+
+void QuicServerSecurity_Free(QuicServerSecurity *self)
+{
+    TlsDefaults_FreeProfile(&self->profile);
 }
 
 bool QuicServerSecurity_NewSession(
     QuicServerSecurity *self,
-    SSL **ssl,
-    QuicTlsContext **tls_context,
+    QuicServerSession *session,
     ngtcp2_crypto_conn_ref *connection_ref
 )
 {
-    *tls_context = NULL;
-    *ssl = SSL_new(self->context);
-    if (*ssl == NULL) {
+    memset(session, 0, sizeof(*session));
+    ngtcp2_crypto_picotls_ctx_init(&session->tls_context);
+
+    session->tls_context.ptls = ptls_new(&self->profile.context, 1);
+    if (session->tls_context.ptls == NULL) {
         return false;
     }
 
-    if (!QuicTlsBackend_NewSession(tls_context, *ssl, true)) {
-        QuicServerSecurity_FreeSession(*ssl, *tls_context);
-        *ssl = NULL;
-        *tls_context = NULL;
+    *ptls_get_data_ptr(session->tls_context.ptls) = connection_ref;
+    session->extensions[0].type = UINT16_MAX;
+    session->extensions[1].type = UINT16_MAX;
+    session->tls_context.handshake_properties.additional_extensions = session->extensions;
+
+    if (ngtcp2_crypto_picotls_configure_server_session(&session->tls_context) != 0) {
+        QuicServerSecurity_FreeSession(session);
         return false;
     }
-
-    SSL_set_app_data(*ssl, connection_ref);
-    TlsDefaults_ConfigureServerSession(*ssl);
 
     return true;
 }
 
-void QuicServerSecurity_FreeSession(SSL *ssl, QuicTlsContext *tls_context)
+void QuicServerSecurity_FreeSession(QuicServerSession *session)
 {
-    if (tls_context != NULL) {
-        QuicTlsBackend_FreeSession(tls_context);
+    if (session->tls_context.ptls == NULL) {
+        return;
     }
-    if (ssl != NULL) {
-        SSL_free(ssl);
-    }
-}
 
-/* ---------- private ---------- */
-
-static bool cryptoBackendReady(void)
-{
-    return QuicTlsBackend_Ready();
+    ngtcp2_crypto_picotls_deconfigure_session(&session->tls_context);
+    ptls_free(session->tls_context.ptls);
+    session->tls_context.ptls = NULL;
 }
