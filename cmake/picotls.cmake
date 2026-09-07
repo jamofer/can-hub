@@ -81,5 +81,5 @@ set(PICOTLS_LIBRARIES
 )
 
 add_library(picotls INTERFACE)
-target_include_directories(picotls INTERFACE "${PICOTLS_INCLUDE_DIR}")
+target_include_directories(picotls INTERFACE "${PICOTLS_INCLUDE_DIR}" "${CAN_HUB_PICOTLS_PREFIX}/lib")
 target_link_libraries(picotls INTERFACE ${PICOTLS_LIBRARIES})

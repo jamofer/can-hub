@@ -88,7 +88,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         src/platform/linux/shared/tls_defaults.c
         src/platform/linux/shared/tls_peer_certificate.c
         src/platform/linux/shared/tls_ed25519.c
+        src/platform/linux/shared/tls_aead.c
+    src/platform/linux/shared/tls_aead.c
     src/platform/linux/shared/tls_ed25519.c
+    src/platform/linux/shared/tls_aead.c
         src/platform/linux/tls/tls_channel.c
         src/platform/linux/tls/tls_client_security.c
         src/platform/linux/quic/quic_client_security.c
@@ -168,6 +171,7 @@ set(AGENT_SOURCES
     src/platform/linux/shared/tls_identity_ed25519.c
     src/platform/linux/shared/tls_peer_certificate.c
     src/platform/linux/shared/tls_ed25519.c
+    src/platform/linux/shared/tls_aead.c
     src/platform/linux/shared/message_framer.c
     src/platform/linux/socketcan/socketcan_adapter.c
     src/platform/linux/socketcan/can_netlink.c
@@ -207,6 +211,7 @@ set(HUB_SOURCES
     src/platform/linux/shared/tls_identity_ed25519.c
     src/platform/linux/shared/tls_peer_certificate.c
     src/platform/linux/shared/tls_ed25519.c
+    src/platform/linux/shared/tls_aead.c
     src/platform/linux/shared/message_framer.c
     src/platform/linux/tcp/tcp_channel.c
     src/platform/linux/tcp/tcp_server_transport.c
@@ -251,6 +256,7 @@ set(CLIENT_TLS_SOURCES
     src/platform/linux/shared/tls_identity_ed25519.c
     src/platform/linux/shared/tls_peer_certificate.c
     src/platform/linux/shared/tls_ed25519.c
+    src/platform/linux/shared/tls_aead.c
     src/platform/linux/tls/tls_channel.c
     src/platform/linux/tls/tls_client_security.c
     src/platform/linux/tls/tls_client_transport.c

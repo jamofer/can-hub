@@ -41,6 +41,21 @@ if(_ecb_init_found EQUAL -1)
 endif()
 string(REPLACE "${_ecb_init_original}" "${_ecb_init_guarded}" _backend_text "${_backend_text}")
 
+# The negotiated CHACHA20 suite uses our Monocypher-backed AEAD, so the backend
+# has to recognise it: the identity comparisons are what select the header
+# protection cipher and, just as importantly, the AEAD usage limits. Falling
+# through would return a NULL header-protection cipher and lose the CHACHA20
+# confidentiality bound. The CHACHA20 cipher itself stays minicrypto's, which
+# is why only the longer AEAD symbol is substituted.
+string(FIND "${_backend_text}" "&ptls_minicrypto_chacha20poly1305" _aead_found)
+if(_aead_found EQUAL -1)
+    message(FATAL_ERROR "ngtcp2 picotls backend changed shape: the CHACHA20-POLY1305 AEAD symbol is gone, re-derive it")
+endif()
+string(REPLACE "&ptls_minicrypto_chacha20poly1305" "&can_hub_chacha20poly1305" _backend_text "${_backend_text}")
+string(REPLACE "#include <picotls/minicrypto.h>"
+               "#include <picotls/minicrypto.h>\n#include \"platform/linux/shared/tls_aead.h\""
+               _backend_text "${_backend_text}")
+
 file(WRITE "${_backend_generated}" "${_backend_text}")
 
 add_library(ngtcp2_crypto_picotls_minicrypto STATIC
@@ -57,5 +72,6 @@ target_include_directories(ngtcp2_crypto_picotls_minicrypto PUBLIC
     "${ngtcp2_SOURCE_DIR}/lib"
     "${ngtcp2_SOURCE_DIR}/crypto/includes"
     "${ngtcp2_SOURCE_DIR}/crypto"
+    "${CAN_HUB_ROOT_DIR}/src"
 )
 target_link_libraries(ngtcp2_crypto_picotls_minicrypto PUBLIC picotls)

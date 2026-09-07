@@ -191,6 +191,7 @@ add_unit_test(test_tls_channel
         ${ROOT_SRC_DIR}/platform/linux/shared/tls_identity_ed25519.c
         ${ROOT_SRC_DIR}/platform/linux/shared/tls_peer_certificate.c
         ${ROOT_SRC_DIR}/platform/linux/shared/tls_ed25519.c
+        ${ROOT_SRC_DIR}/platform/linux/shared/tls_aead.c
         ${ROOT_SRC_DIR}/platform/linux/shared/message_framer.c
         ${ROOT_SRC_DIR}/protocol/message_header.c
         ${ROOT_SRC_DIR}/protocol/wire.c

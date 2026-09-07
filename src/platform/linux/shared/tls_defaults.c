@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "platform/linux/shared/tls_aead.h"
 #include "platform/linux/shared/tls_peer_certificate.h"
 
 #define ALPN_PROTOCOL "canhub/0"
@@ -26,7 +27,7 @@ static const uint16_t verifiable_signature_algorithms[] = { PTLS_SIGNATURE_ED255
  * that suite.
  */
 static ptls_cipher_suite_t *cipher_suites[] = {
-    &ptls_minicrypto_chacha20poly1305sha256,
+    &can_hub_chacha20poly1305sha256,
     &ptls_minicrypto_aes128gcmsha256,
     NULL,
 };
