@@ -9,6 +9,8 @@
 #include "platform/linux/clock/clock.h"
 #include "protocol/message_header.h"
 
+#define TLS_CLIENT_READ_CHUNK_SIZE 4096
+
 static bool portConnect(void *context);
 static void portDisconnect(void *context);
 static bool portSendControl(void *context, const uint8_t *data, size_t size);
@@ -16,6 +18,10 @@ static bool portSendFrame(void *context, uint8_t channel, const uint8_t *data, s
 static void portSetChannelMode(void *context, uint8_t channel, bool reliable);
 static bool connectTcp(TlsClientTransport *self, int32_t *connected_fd);
 static void pumpHandshake(TlsClientTransport *self);
+static void announceWhenEstablished(TlsClientTransport *self);
+static bool pumpCiphertextOut(TlsClientTransport *self);
+static bool pumpCiphertextIn(TlsClientTransport *self);
+static bool feedChannel(TlsClientTransport *self, const uint8_t *data, size_t size);
 static void dispatchMessage(void *context, const uint8_t *message, size_t size);
 static void closeConnection(TlsClientTransport *self, bool notify);
 
@@ -40,6 +46,7 @@ bool TlsClientTransport_Init(
     snprintf(self->host, TLS_CLIENT_HOST_MAX, "%s", host);
     snprintf(self->port_text, TLS_CLIENT_PORT_TEXT_MAX, "%s", port);
     TlsChannel_Reset(&self->channel);
+    self->fd = TLS_CHANNEL_NO_SOCKET;
 
     return TlsClientSecurity_Init(&self->security, security_config);
 }
@@ -51,7 +58,7 @@ TransportPort *TlsClientTransport_Port(TlsClientTransport *self)
 
 int32_t TlsClientTransport_Fd(const TlsClientTransport *self)
 {
-    return self->channel.fd;
+    return self->fd;
 }
 
 bool TlsClientTransport_WantsWritable(const TlsClientTransport *self)
@@ -71,14 +78,18 @@ void TlsClientTransport_OnReadable(TlsClientTransport *self)
         return;
     }
 
-    if (!TlsChannel_IsEstablished(&self->channel)) {
-        pumpHandshake(self);
+    if (!pumpCiphertextIn(self)) {
+        closeConnection(self, true);
         return;
     }
-
-    if (!TlsChannel_Receive(&self->channel, &sink)) {
-        closeConnection(self, true);
+    if (!TlsChannel_IsBound(&self->channel)) {
+        return;
     }
+    if (!pumpCiphertextOut(self)) {
+        closeConnection(self, true);
+        return;
+    }
+    announceWhenEstablished(self);
 }
 
 void TlsClientTransport_OnWritable(TlsClientTransport *self)
@@ -91,7 +102,7 @@ void TlsClientTransport_OnWritable(TlsClientTransport *self)
     }
 
     if (self->connecting) {
-        getsockopt((SOCKET)self->channel.fd, SOL_SOCKET, SO_ERROR, (char *)&socket_error, &error_length);
+        getsockopt((SOCKET)self->fd, SOL_SOCKET, SO_ERROR, (char *)&socket_error, &error_length);
         if (socket_error != 0) {
             closeConnection(self, true);
             return;
@@ -102,14 +113,11 @@ void TlsClientTransport_OnWritable(TlsClientTransport *self)
         return;
     }
 
-    if (!TlsChannel_IsEstablished(&self->channel)) {
-        pumpHandshake(self);
+    if (!pumpCiphertextOut(self)) {
+        closeConnection(self, true);
         return;
     }
-
-    if (!TlsChannel_Flush(&self->channel)) {
-        closeConnection(self, true);
-    }
+    announceWhenEstablished(self);
 }
 
 /* ---------- private: transport port ---------- */
@@ -117,7 +125,7 @@ void TlsClientTransport_OnWritable(TlsClientTransport *self)
 static bool portConnect(void *context)
 {
     TlsClientTransport *self = context;
-    SSL *ssl;
+    ptls_t *tls;
     int32_t connected_fd;
 
     if (TlsChannel_IsBound(&self->channel)) {
@@ -127,12 +135,13 @@ static bool portConnect(void *context)
     if (!connectTcp(self, &connected_fd)) {
         return false;
     }
-    if (!TlsClientSecurity_NewSession(&self->security, self->host, &ssl)) {
+    if (!TlsClientSecurity_NewSession(&self->security, self->host, &tls)) {
         closesocket((SOCKET)connected_fd);
         return false;
     }
 
-    TlsChannel_Bind(&self->channel, connected_fd, ssl);
+    TlsChannel_Bind(&self->channel, tls, TlsClientSecurity_HandshakeProperties(&self->security));
+    self->fd = connected_fd;
     self->connecting = true;
     self->announced = false;
 
@@ -156,7 +165,7 @@ static bool portSendControl(void *context, const uint8_t *data, size_t size)
     if (!TlsChannel_Queue(&self->channel, data, size)) {
         return false;
     }
-    if (!TlsChannel_Flush(&self->channel)) {
+    if (!TlsChannel_Flush(&self->channel) || !pumpCiphertextOut(self)) {
         closeConnection(self, true);
         return false;
     }
@@ -227,15 +236,101 @@ static bool connectTcp(TlsClientTransport *self, int32_t *connected_fd)
 
 static void pumpHandshake(TlsClientTransport *self)
 {
-    if (!TlsChannel_Pump(&self->channel)) {
+    if (!TlsChannel_Pump(&self->channel) || !pumpCiphertextOut(self)) {
         closeConnection(self, true);
         return;
     }
 
-    if (TlsChannel_IsEstablished(&self->channel) && !self->announced) {
-        self->announced = true;
-        self->events.on_connected(self->events.context);
+    announceWhenEstablished(self);
+}
+
+static void announceWhenEstablished(TlsClientTransport *self)
+{
+    if (!TlsChannel_IsEstablished(&self->channel) || self->announced) {
+        return;
     }
+
+    self->announced = true;
+    self->events.on_connected(self->events.context);
+}
+
+static bool pumpCiphertextOut(TlsClientTransport *self)
+{
+    int bytes_sent;
+
+    if (!TlsChannel_Flush(&self->channel)) {
+        return false;
+    }
+
+    while (TlsChannel_PendingCiphertext(&self->channel) > 0) {
+        bytes_sent = send(
+            (SOCKET)self->fd,
+            (const char *)TlsChannel_Ciphertext(&self->channel),
+            (int)TlsChannel_PendingCiphertext(&self->channel),
+            0
+        );
+        if (bytes_sent > 0) {
+            TlsChannel_ConsumeCiphertext(&self->channel, (size_t)bytes_sent);
+            if (!TlsChannel_Flush(&self->channel)) {
+                return false;
+            }
+            continue;
+        }
+        if (bytes_sent < 0 && WSAGetLastError() == WSAEWOULDBLOCK) {
+            return true;
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+static bool pumpCiphertextIn(TlsClientTransport *self)
+{
+    uint8_t chunk[TLS_CLIENT_READ_CHUNK_SIZE];
+    int bytes_received;
+
+    for (;;) {
+        bytes_received = recv((SOCKET)self->fd, (char *)chunk, (int)sizeof(chunk), 0);
+        if (bytes_received > 0) {
+            if (!feedChannel(self, chunk, (size_t)bytes_received)) {
+                return false;
+            }
+            if (!TlsChannel_IsBound(&self->channel)) {
+                return true;
+            }
+            continue;
+        }
+        if (bytes_received < 0 && WSAGetLastError() == WSAEWOULDBLOCK) {
+            return true;
+        }
+
+        return false;
+    }
+}
+
+static bool feedChannel(TlsClientTransport *self, const uint8_t *data, size_t size)
+{
+    MessageSink sink = { self, dispatchMessage };
+    size_t offset = 0;
+    size_t consumed;
+
+    while (offset < size) {
+        if (!TlsChannel_PushCiphertext(&self->channel, data + offset, size - offset, &consumed, &sink)) {
+            return false;
+        }
+        offset += consumed;
+        announceWhenEstablished(self);
+        if (!TlsChannel_IsBound(&self->channel)) {
+            return true;
+        }
+        if (consumed == 0) {
+            return true;
+        }
+    }
+
+    return true;
 }
 
 static void dispatchMessage(void *context, const uint8_t *message, size_t size)
@@ -259,8 +354,9 @@ static void closeConnection(TlsClientTransport *self, bool notify)
         return;
     }
 
-    connection_fd = self->channel.fd;
+    connection_fd = self->fd;
     TlsChannel_Close(&self->channel);
+    self->fd = TLS_CHANNEL_NO_SOCKET;
     closesocket((SOCKET)connection_fd);
     self->connecting = false;
     self->announced = false;

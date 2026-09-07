@@ -397,9 +397,7 @@ static bool encodePrivateKey(uint8_t *buffer, size_t buffer_size, size_t *length
 static void formatUtcTime(char *text, int64_t offset_seconds)
 {
     time_t moment = time(NULL) + (time_t)offset_seconds;
-    struct tm parts;
-
-    gmtime_r(&moment, &parts);
+    struct tm parts = *gmtime(&moment);
     snprintf(
         text,
         UTC_TIME_SIZE + 1,

@@ -20,10 +20,6 @@ option(CAN_HUB_STATIC "Fully static binaries" OFF)
 if(CAN_HUB_STATIC)
     message(FATAL_ERROR "CAN_HUB_STATIC is not wired into the picotls build yet")
 endif()
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    message(FATAL_ERROR "the windows build is not wired into the picotls build yet")
-endif()
-
 include(ProcessorCount)
 ProcessorCount(CAN_HUB_BUILD_PARALLELISM)
 if(CAN_HUB_BUILD_PARALLELISM EQUAL 0)
@@ -104,6 +100,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         src/platform/windows/tcp/tcp_channel.c
         src/platform/windows/tcp/tcp_client_transport.c
         src/platform/windows/tls/tls_client_transport.c
+        src/platform/linux/shared/tls_identity_ed25519.c
         src/platform/windows/shared/tls_identity.c
         src/platform/windows/libcanhub/canhub.c
     )

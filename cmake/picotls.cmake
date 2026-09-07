@@ -16,6 +16,34 @@ endif()
 set(CAN_HUB_PICOTLS_PREFIX "${CAN_HUB_ROOT_DIR}/build/picotls-src")
 set(CAN_HUB_PICOTLS_BUILD "${CMAKE_BINARY_DIR}/picotls-build")
 
+# picotls guards its POSIX includes with #ifndef _WINDOWS but its CMake build
+# never defines it — upstream builds for Windows through a Visual Studio project
+# instead. Define it here so the mingw cross build compiles the Windows path,
+# where minicrypto's RNG already uses BCrypt.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    # picotls's wincompat.h includes <Winsock2.h>, which only resolves on a
+    # case-insensitive filesystem: upstream builds Windows with MSVC, where the
+    # casing never mattered. mingw on Linux needs the name as written.
+    # Upstream's wincompat.h is written for MSVC: it includes <Winsock2.h>,
+    # which only resolves on a case-insensitive filesystem, and defines a
+    # struct timezone that mingw already provides. mingw supplies everything
+    # picotls needs from it, so this replaces it rather than patching it.
+    set(_picotls_wincompat "${CMAKE_BINARY_DIR}/picotls-wincompat")
+    file(WRITE "${_picotls_wincompat}/wincompat.h"
+"#pragma once
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <malloc.h>
+#include <sys/time.h>
+#ifndef strcasecmp
+#define strcasecmp _stricmp
+#endif
+")
+    set(_picotls_platform_flags "-D_WINDOWS -I${_picotls_wincompat}")
+else()
+    set(_picotls_platform_flags "")
+endif()
+
 if(DEFINED CAN_HUB_OPENSSL_PREFIX)
     set(_picotls_openssl_root "-DOPENSSL_ROOT_DIR=${CAN_HUB_OPENSSL_PREFIX}")
 else()
@@ -35,7 +63,7 @@ endif()
 # fixes AES-128-GCM for Initial packets, which unauthenticated peers can make
 # the hub process. x86-64 only, and gated again at runtime by
 # ptls_fusion_is_supported_by_cpu.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(CAN_HUB_TLS_FUSION ON)
     set(_picotls_fusion_option "-DWITH_FUSION=ON")
     set(_picotls_fusion_target picotls-fusion)
@@ -78,6 +106,21 @@ if(NOT EXISTS "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a")
         endif()
     endif()
 
+    # cifra takes an MSVC-only branch under _WINDOWS: it calls _BitScanReverse,
+    # which clang rejects on the uint32_t argument, and which computes leading
+    # zeroes in a function named count_trailing_zeroes. Narrow it to MSVC so
+    # mingw uses the GCC builtin. A no-op anywhere _WINDOWS is not defined.
+    set(_cifra_bitops "${CAN_HUB_PICOTLS_PREFIX}/deps/cifra/src/bitops.h")
+    file(READ "${_cifra_bitops}" _cifra_text)
+    string(FIND "${_cifra_text}" "count_trailing_zeroes" _cifra_found)
+    if(_cifra_found EQUAL -1)
+        message(FATAL_ERROR "cifra changed shape: count_trailing_zeroes is gone, re-derive the mingw fix")
+    endif()
+    string(REPLACE "#ifdef _WINDOWS\n  uint32_t r = 0;\n  _BitScanReverse"
+                   "#if defined(_WINDOWS) && defined(_MSC_VER)\n  uint32_t r = 0;\n  _BitScanReverse"
+                   _cifra_text "${_cifra_text}")
+    file(WRITE "${_cifra_bitops}" "${_cifra_text}")
+
     execute_process(
         COMMAND ${CMAKE_COMMAND} -S "${CAN_HUB_PICOTLS_PREFIX}" -B "${CAN_HUB_PICOTLS_BUILD}"
                 -DCMAKE_BUILD_TYPE=Release
@@ -85,7 +128,7 @@ if(NOT EXISTS "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a")
                 -DCMAKE_POSITION_INDEPENDENT_CODE=ON
                 ${_picotls_cross}
                 ${_picotls_fusion_option}
-                "-DCMAKE_C_FLAGS=-ffunction-sections -fdata-sections"
+                "-DCMAKE_C_FLAGS=-ffunction-sections -fdata-sections ${_picotls_platform_flags}"
         RESULT_VARIABLE _picotls_configure
     )
     if(NOT _picotls_configure EQUAL 0)
@@ -117,4 +160,9 @@ if(CAN_HUB_TLS_FUSION)
     target_compile_definitions(picotls INTERFACE CAN_HUB_TLS_FUSION)
 endif()
 target_include_directories(picotls INTERFACE "${PICOTLS_INCLUDE_DIR}" "${CAN_HUB_PICOTLS_PREFIX}/lib")
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    # wincompat.h ships under the Visual Studio project, not under include/
+    target_include_directories(picotls INTERFACE "${_picotls_wincompat}")
+    target_compile_definitions(picotls INTERFACE _WINDOWS)
+endif()
 target_link_libraries(picotls INTERFACE ${PICOTLS_LIBRARIES})
