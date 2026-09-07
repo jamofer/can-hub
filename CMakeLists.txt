@@ -14,12 +14,6 @@ add_compile_options(-Wall -Wextra)
 
 option(CAN_HUB_STATIC "Fully static binaries" OFF)
 
-# picotls is the only TLS stack (MIGRATION_PICOTLS.md). The cross-compile,
-# static and windows profiles are not wired into it yet; refuse them loudly
-# rather than failing deep inside the dependency build.
-if(CAN_HUB_STATIC)
-    message(FATAL_ERROR "CAN_HUB_STATIC is not wired into the picotls build yet")
-endif()
 include(ProcessorCount)
 ProcessorCount(CAN_HUB_BUILD_PARALLELISM)
 if(CAN_HUB_BUILD_PARALLELISM EQUAL 0)

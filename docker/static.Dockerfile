@@ -1,5 +1,6 @@
-# Fully static can-hub binaries (hub, agent, client, cli) against musl and
-# a source-built OpenSSL stack. Zero runtime dependencies: the binaries run
+# Fully static can-hub binaries (hub, agent, client, cli) against musl.
+# Every dependency is built from source into the build tree. Zero runtime
+# dependencies: the binaries run
 # on any Linux of the right architecture regardless of the distro, its libc
 # or its package set (embedded boards, vendor OSes, old installations).
 #
@@ -56,27 +57,6 @@ RUN . /etc/static-build.env \
     && rm /tmp/toolchain.tar.xz
 
 ENV PATH=/opt/toolchain/bin:$PATH
-ENV STAGING=/opt/staging
-ENV PKG_CONFIG_PATH=$STAGING/lib/pkgconfig
-ENV PKG_CONFIG_LIBDIR=$STAGING/lib/pkgconfig
-
-ARG OPENSSL_VERSION=3.5.7
-ARG OPENSSL_SHA256=a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8
-RUN . /etc/static-build.env \
-    && case "$PROCESSOR" in \
-        x86_64) OPENSSL_TARGET=linux-x86_64;; \
-        aarch64) OPENSSL_TARGET=linux-aarch64;; \
-        arm) OPENSSL_TARGET=linux-armv4;; \
-    esac \
-    && curl -fsSL -o /tmp/openssl.tar.gz "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz" \
-    && echo "$OPENSSL_SHA256  /tmp/openssl.tar.gz" | sha256sum -c \
-    && mkdir /tmp/openssl && tar -xf /tmp/openssl.tar.gz --strip-components=1 -C /tmp/openssl \
-    && cd /tmp/openssl \
-    && ./Configure "$OPENSSL_TARGET" --cross-compile-prefix=$CROSS_TRIPLET- --prefix=$STAGING --libdir=lib \
-        no-shared no-apps no-docs no-tests -O2 -ffunction-sections -fdata-sections \
-    && make -j"$(nproc)" && make install_sw \
-    && rm -rf /tmp/openssl /tmp/openssl.tar.gz
-
 # Node and Rust for the can-hub-web admin panel (Rust daemon, embedded React
 # SPA). Host tools are x86_64 (the build runs on amd64); the daemon is
 # cross-compiled to the musl RUST_TARGET, reusing the Bootlin musl gcc as the
@@ -106,7 +86,6 @@ RUN . /etc/static-build.env \
     && rm -rf /tmp/rust-std /tmp/rust-std.tar.xz
 
 COPY . /src
-ENV CAN_HUB_SYSROOT=/opt/staging
 
 # Cross-compile the web admin panel to the musl target. The Bootlin musl gcc
 # compiles rusqlite's bundled SQLite and links the fully static binary.
