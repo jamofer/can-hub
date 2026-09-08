@@ -63,7 +63,7 @@ endif()
 # fixes AES-128-GCM for Initial packets, which unauthenticated peers can make
 # the hub process. x86-64 only, and gated again at runtime by
 # ptls_fusion_is_supported_by_cpu.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
     set(CAN_HUB_TLS_FUSION ON)
     set(_picotls_fusion_option "-DWITH_FUSION=ON")
     set(_picotls_fusion_target picotls-fusion)
@@ -121,6 +121,23 @@ if(NOT EXISTS "${CAN_HUB_PICOTLS_BUILD}/libpicotls-core.a")
                    _cifra_text "${_cifra_text}")
     file(WRITE "${_cifra_bitops}" "${_cifra_text}")
 
+    # fusion's CPU probe has the same MSVC-only shape: under _WINDOWS it calls
+    # __cpuid(uint32_t[4], int), which is MSVC's, while clang only has the one
+    # from <cpuid.h> with a different signature. The #else branch is GCC inline
+    # asm that mingw compiles as it stands — and reads the PCLMUL bit at 1
+    # rather than the Windows branch's 5, which is VMX. Narrow the guard to
+    # MSVC. A no-op anywhere _WINDOWS is not defined.
+    set(_fusion_source "${CAN_HUB_PICOTLS_PREFIX}/lib/fusion.c")
+    file(READ "${_fusion_source}" _fusion_text)
+    string(FIND "${_fusion_text}" "__cpuid(cpu_info, 0)" _fusion_found)
+    if(_fusion_found EQUAL -1)
+        message(FATAL_ERROR "picotls fusion changed shape: the MSVC cpuid probe is gone, re-derive the mingw fix")
+    endif()
+    string(REPLACE "#ifdef _WINDOWS\n/**\n * ptls_fusion_is_supported_by_cpu:"
+                   "#if defined(_WINDOWS) && defined(_MSC_VER)\n/**\n * ptls_fusion_is_supported_by_cpu:"
+                   _fusion_text "${_fusion_text}")
+    file(WRITE "${_fusion_source}" "${_fusion_text}")
+
     execute_process(
         COMMAND ${CMAKE_COMMAND} -S "${CAN_HUB_PICOTLS_PREFIX}" -B "${CAN_HUB_PICOTLS_BUILD}"
                 -DCMAKE_BUILD_TYPE=Release
@@ -158,6 +175,16 @@ endif()
 add_library(picotls INTERFACE)
 if(CAN_HUB_TLS_FUSION)
     target_compile_definitions(picotls INTERFACE CAN_HUB_TLS_FUSION)
+    # fusion's 256-bit VAES path miscompiles under llvm-mingw: built there,
+    # ptls_non_temporal_aes128gcm produces ciphertext that does not match
+    # minicrypto's AES-128-GCM for the same key, nonce and input, while the
+    # same source built with gcc on Linux matches. Forcing the 128-bit path
+    # makes every engine byte-identical again. The QUIC engine never used the
+    # 256-bit path (fusion.c hardcodes aesni256 to 0 there), so this costs
+    # nothing on Windows beyond the TLS record layer at MTU size.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        target_compile_definitions(picotls INTERFACE CAN_HUB_TLS_FUSION_NO_AESNI256)
+    endif()
 endif()
 target_include_directories(picotls INTERFACE "${PICOTLS_INCLUDE_DIR}" "${CAN_HUB_PICOTLS_PREFIX}/lib")
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")

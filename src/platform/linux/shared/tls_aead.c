@@ -211,6 +211,9 @@ static bool fusionUsable(void)
 
     if (usable < 0) {
         usable = ptls_fusion_is_supported_by_cpu() ? 1 : 0;
+#if defined(CAN_HUB_TLS_FUSION_NO_AESNI256)
+        ptls_fusion_can_aesni256 = 0;
+#endif
     }
 
     return usable == 1;
