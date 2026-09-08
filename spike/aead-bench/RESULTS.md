@@ -58,13 +58,27 @@ Not timed; run for agreement only, which is what it found.
 The same source built with gcc on Linux matches in every combination. `cmake/picotls.cmake`
 therefore forces the 128-bit path on Windows.
 
-## arm64 / armv7 — not measured
+## arm64 / armv7 — correct, speed unknown
 
-Needs the hardware: emulation says nothing about AEAD throughput. Build the tree natively on
-the target and run
+Run under qemu (`docker --platform linux/arm64` and `linux/arm/v7`, Debian bookworm, native
+gcc in the container), 2026-09-08. **Agreement only** — emulated timings are not reported here
+because they measure qemu, not the target.
+
+| Engine | one-shot | vectored |
+|---|---|---|
+| `can-hub chacha20poly1305`, aarch64 | match | match |
+| `can-hub chacha20poly1305`, armv7l | match | match |
+
+So the Monocypher POLY1305 binding is correct on both, which had never been checked. fusion is
+x86-64 only and picotls ships no ARM AES engine, so ChaCha20-Poly1305 is the whole story there.
+
+**Throughput still needs hardware.** On the target:
 
     make BUILD=<can-hub build tree> FUSION=0 && ./aead_bench
 
-fusion is x86-64 only and picotls ships no ARM AES engine, so the rows that matter there are
-`can-hub chacha20poly1305` against a v0.3.0 build's OpenSSL. Until that exists, whether this
-stack is ahead or behind on ARM is unknown in either direction.
+and compare against OpenSSL's ChaCha20-Poly1305 and AES-128-GCM on the same CPU. Check
+`/proc/cpuinfo` for `aes` and `pmull` first: the ARMv8 crypto extensions are optional, and the
+answer depends on them. Where they are present OpenSSL uses hardware AES and we do not, which
+is the worst case for this stack; where they are absent OpenSSL also falls back to software and
+we may well be ahead. Measure on hardware representative of the fleet, not on whatever is
+nearest.
