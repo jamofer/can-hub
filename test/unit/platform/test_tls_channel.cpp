@@ -10,6 +10,7 @@ extern "C" {
 #include "platform/linux/tls/tls_client_security.h"
 #include "platform/linux/tls/tls_server_security.h"
 #include "platform/linux/shared/pin_store.h"
+#include "platform/linux/shared/tls_aead.h"
 #include "platform/linux/shared/tls_identity.h"
 }
 
@@ -70,6 +71,17 @@ describe("tls_channel", []() {
         expect(shuttle(&client_channel, &server_channel, &sink)).toBe(true);
         expect(captured_size).toBe(sizeof(message));
         expect((const uint8_t *)captured_message).toEqualMemory(message, sizeof(message));
+    });
+
+    it("negotiates the suite the stream profile prefers", []() {
+        ptls_cipher_suite_t *negotiated = NULL;
+        bool client_failed = false;
+
+        expect(startChannelPair()).toBe(true);
+        expect(pumpUntilEstablished(&client_failed)).toBe(true);
+        negotiated = ptls_get_cipher(client_channel.tls);
+
+        expect(negotiated->id).toBe(TlsAead_CipherSuites(kTLS_TRANSPORT_STREAM)[0]->id);
     });
 
     it("exposes the client fingerprint to the server after the handshake", []() {

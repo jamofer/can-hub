@@ -8,7 +8,7 @@ bool TlsServerSecurity_Init(TlsServerSecurity *self, const char *certificate_fil
 {
     memset(self, 0, sizeof(*self));
 
-    if (!TlsDefaults_InitServerProfile(&self->profile, TlsPeerCertificate_FromDataPointer)) {
+    if (!TlsDefaults_InitServerProfile(&self->profile, kTLS_TRANSPORT_STREAM, TlsPeerCertificate_FromDataPointer)) {
         return false;
     }
     if (!TlsDefaults_LoadIdentity(&self->profile, certificate_file, key_file)) {

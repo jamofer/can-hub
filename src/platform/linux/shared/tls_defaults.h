@@ -3,6 +3,7 @@
 #include <stdbool.h>
 
 #include <picotls.h>
+#include "platform/linux/shared/tls_aead.h"
 #include "platform/linux/shared/tls_ed25519.h"
 #include "platform/linux/shared/tls_peer_certificate.h"
 
@@ -25,8 +26,8 @@ typedef struct {
     bool has_signer;
 } TlsProfile;
 
-bool TlsDefaults_InitClientProfile(TlsProfile *self);
-bool TlsDefaults_InitServerProfile(TlsProfile *self, TlsPeerResolver resolve_peer);
+bool TlsDefaults_InitClientProfile(TlsProfile *self, TLS_TRANSPORT transport);
+bool TlsDefaults_InitServerProfile(TlsProfile *self, TLS_TRANSPORT transport, TlsPeerResolver resolve_peer);
 bool TlsDefaults_LoadIdentity(TlsProfile *self, const char *certificate_path, const char *key_path);
 void TlsDefaults_FreeProfile(TlsProfile *self);
 void TlsDefaults_ConfigureClientHandshake(ptls_handshake_properties_t *properties);

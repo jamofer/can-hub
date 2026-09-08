@@ -10,7 +10,7 @@ bool QuicServerSecurity_Init(QuicServerSecurity *self, const char *certificate_f
 {
     memset(self, 0, sizeof(*self));
 
-    if (!TlsDefaults_InitServerProfile(&self->profile, QuicConnection_PeerCertificateOfSession)) {
+    if (!TlsDefaults_InitServerProfile(&self->profile, kTLS_TRANSPORT_QUIC, QuicConnection_PeerCertificateOfSession)) {
         return false;
     }
     if (ngtcp2_crypto_picotls_configure_server_context(&self->profile.context) != 0) {

@@ -16,7 +16,7 @@ static const ptls_iovec_t alpn_protocols[] = {
 };
 static const uint16_t verifiable_signature_algorithms[] = { PTLS_SIGNATURE_ED25519, UINT16_MAX };
 
-static void initCommonProfile(TlsProfile *self);
+static void initCommonProfile(TlsProfile *self, TLS_TRANSPORT transport);
 static int acceptAnyClientCertificate(
     ptls_verify_certificate_t *verifier,
     ptls_t *tls,
@@ -30,16 +30,16 @@ static int selectAlpnProtocol(ptls_on_client_hello_t *selector, ptls_t *tls, ptl
 
 /* ---------- public ---------- */
 
-bool TlsDefaults_InitClientProfile(TlsProfile *self)
+bool TlsDefaults_InitClientProfile(TlsProfile *self, TLS_TRANSPORT transport)
 {
-    initCommonProfile(self);
+    initCommonProfile(self, transport);
 
     return true;
 }
 
-bool TlsDefaults_InitServerProfile(TlsProfile *self, TlsPeerResolver resolve_peer)
+bool TlsDefaults_InitServerProfile(TlsProfile *self, TLS_TRANSPORT transport, TlsPeerResolver resolve_peer)
 {
-    initCommonProfile(self);
+    initCommonProfile(self, transport);
 
     self->resolve_peer = resolve_peer;
 
@@ -88,13 +88,13 @@ void TlsDefaults_ConfigureClientHandshake(ptls_handshake_properties_t *propertie
 
 /* ---------- private ---------- */
 
-static void initCommonProfile(TlsProfile *self)
+static void initCommonProfile(TlsProfile *self, TLS_TRANSPORT transport)
 {
     memset(self, 0, sizeof(*self));
     self->context.random_bytes = ptls_minicrypto_random_bytes;
     self->context.get_time = &ptls_get_time;
     self->context.key_exchanges = ptls_minicrypto_key_exchanges;
-    self->context.cipher_suites = TlsAead_CipherSuites();
+    self->context.cipher_suites = TlsAead_CipherSuites(transport);
 }
 
 static int acceptAnyClientCertificate(

@@ -18,7 +18,7 @@ bool QuicClientSecurity_Init(
 {
     memset(self, 0, sizeof(*self));
 
-    if (!TlsDefaults_InitClientProfile(&self->profile)) {
+    if (!TlsDefaults_InitClientProfile(&self->profile, kTLS_TRANSPORT_QUIC)) {
         return false;
     }
     if (ngtcp2_crypto_picotls_configure_client_context(&self->profile.context) != 0) {

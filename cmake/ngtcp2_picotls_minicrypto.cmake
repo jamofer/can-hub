@@ -60,7 +60,13 @@ string(REPLACE "#include <picotls/minicrypto.h>"
 # connection negotiates, and their header protection is one AES-ECB block. Route
 # both through the accessors so an AES-NI build does not leave that path on
 # cifra's constant-time AES, which is where the cheap DoS lives.
-foreach(_aes_symbol ptls_minicrypto_aes128gcm ptls_minicrypto_aes128ecb)
+# AES-256 is not an Initial-packet suite, but it is offered where there is a
+# fast AES, and the backend recognises a negotiated suite by comparing against
+# the very algorithm the profile put in it. Left on the minicrypto symbols the
+# comparisons would miss an AES-NI AES-256 connection, which means no header
+# protection cipher and no confidentiality bound.
+foreach(_aes_symbol ptls_minicrypto_aes128gcm ptls_minicrypto_aes128ecb
+                    ptls_minicrypto_aes256gcm ptls_minicrypto_aes256ecb)
     string(FIND "${_backend_text}" "&${_aes_symbol}" _aes_found)
     if(_aes_found EQUAL -1)
         message(FATAL_ERROR "ngtcp2 picotls backend changed shape: ${_aes_symbol} is gone, re-derive it")
@@ -68,6 +74,8 @@ foreach(_aes_symbol ptls_minicrypto_aes128gcm ptls_minicrypto_aes128ecb)
 endforeach()
 string(REPLACE "&ptls_minicrypto_aes128gcm" "TlsAead_Aes128Gcm()" _backend_text "${_backend_text}")
 string(REPLACE "&ptls_minicrypto_aes128ecb" "TlsAead_Aes128Ecb()" _backend_text "${_backend_text}")
+string(REPLACE "&ptls_minicrypto_aes256gcm" "TlsAead_Aes256Gcm()" _backend_text "${_backend_text}")
+string(REPLACE "&ptls_minicrypto_aes256ecb" "TlsAead_Aes256Ecb()" _backend_text "${_backend_text}")
 
 file(WRITE "${_backend_generated}" "${_backend_text}")
 

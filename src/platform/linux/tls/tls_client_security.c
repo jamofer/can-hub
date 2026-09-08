@@ -10,7 +10,7 @@ bool TlsClientSecurity_Init(TlsClientSecurity *self, const TlsClientSecurityConf
 {
     memset(self, 0, sizeof(*self));
 
-    if (!TlsDefaults_InitClientProfile(&self->profile)) {
+    if (!TlsDefaults_InitClientProfile(&self->profile, kTLS_TRANSPORT_STREAM)) {
         return false;
     }
     if (!loadClientIdentity(self, config)) {

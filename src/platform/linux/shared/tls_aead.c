@@ -16,6 +16,7 @@ static void poly1305Init(struct chacha20poly1305_context_t *context, const void 
 static void poly1305Update(struct chacha20poly1305_context_t *context, const void *input, size_t size);
 static void poly1305Finish(struct chacha20poly1305_context_t *context, void *tag);
 static int setupCrypto(ptls_aead_context_t *context, int is_enc, const void *key, const void *iv);
+static size_t appendSuite(ptls_cipher_suite_t **offered, size_t count, ptls_cipher_suite_t *suite);
 
 /* ---------- public ---------- */
 
@@ -79,7 +80,18 @@ static int setupCrypto(ptls_aead_context_t *context, int is_enc, const void *key
     );
 }
 
-/* ---------- public: aes for quic initial packets ---------- */
+static size_t appendSuite(ptls_cipher_suite_t **offered, size_t count, ptls_cipher_suite_t *suite)
+{
+    if (suite == NULL) {
+        return 0;
+    }
+
+    offered[count] = suite;
+
+    return 1;
+}
+
+/* ---------- public: aes ---------- */
 
 #if defined(CAN_HUB_TLS_FUSION)
 
@@ -96,7 +108,8 @@ typedef struct {
 } FusionEcbContext;
 
 static bool fusionUsable(void);
-static ptls_cipher_suite_t *acceleratedAesSuite(void);
+static ptls_cipher_suite_t *acceleratedAesSuite(TLS_TRANSPORT transport);
+static ptls_cipher_suite_t *acceleratedAes256Suite(TLS_TRANSPORT transport);
 static ptls_fusion_aesecb_context_t *fusionEcbOf(FusionEcbContext *self);
 static void fusionEcbDispose(ptls_cipher_context_t *context);
 static void fusionEcbTransform(ptls_cipher_context_t *context, void *output, const void *input, size_t size);
@@ -111,29 +124,85 @@ static ptls_cipher_algorithm_t fusion_aes128ecb = {
     fusionEcbSetup,
 };
 
+static ptls_cipher_algorithm_t fusion_aes256ecb = {
+    "AES256-ECB",
+    PTLS_AES256_KEY_SIZE,
+    PTLS_AES_BLOCK_SIZE,
+    0,
+    sizeof(FusionEcbContext),
+    fusionEcbSetup,
+};
+
 ptls_aead_algorithm_t *TlsAead_Aes128Gcm(void)
 {
     return fusionUsable() ? &ptls_fusion_aes128gcm : &ptls_minicrypto_aes128gcm;
 }
 
-/*
- * Not offered as a negotiated suite, deliberately. picotls ships two AES-NI
- * engines and says so: ptls_fusion_aes128gcm is "optimized for QUIC" while
- * ptls_non_temporal_aes128gcm is "optimized for TLS". One profile serves both
- * of our transports, and putting the QUIC engine on TLS-over-TCP records makes
- * the peer reject them with a bad record MAC — observed, not assumed. Serving
- * both would mean a per-transport suite list; until then AES stays confined to
- * the Initial packets, where RFC 9001 mandates it and where the engine is used
- * exactly as intended.
- */
-static ptls_cipher_suite_t *acceleratedAesSuite(void)
+ptls_aead_algorithm_t *TlsAead_Aes256Gcm(void)
 {
-    return NULL;
+    return fusionUsable() ? &ptls_fusion_aes256gcm : &ptls_minicrypto_aes256gcm;
+}
+
+/*
+ * The QUIC suite has to keep the very pointer TlsAead_Aes128Gcm returns: the
+ * ngtcp2 backend selects the header-protection cipher and the AEAD usage
+ * limits by comparing the negotiated aead against it, and a miss would mean
+ * encrypting past the confidentiality bound with no header protection.
+ */
+static ptls_cipher_suite_t quic_aes128gcmsha256 = {
+    .id = PTLS_CIPHER_SUITE_AES_128_GCM_SHA256,
+    .name = PTLS_CIPHER_SUITE_NAME_AES_128_GCM_SHA256,
+    .aead = &ptls_fusion_aes128gcm,
+    .hash = &ptls_minicrypto_sha256,
+};
+
+static ptls_cipher_suite_t stream_aes128gcmsha256 = {
+    .id = PTLS_CIPHER_SUITE_AES_128_GCM_SHA256,
+    .name = PTLS_CIPHER_SUITE_NAME_AES_128_GCM_SHA256,
+    .aead = &ptls_non_temporal_aes128gcm,
+    .hash = &ptls_minicrypto_sha256,
+};
+
+static ptls_cipher_suite_t quic_aes256gcmsha384 = {
+    .id = PTLS_CIPHER_SUITE_AES_256_GCM_SHA384,
+    .name = PTLS_CIPHER_SUITE_NAME_AES_256_GCM_SHA384,
+    .aead = &ptls_fusion_aes256gcm,
+    .hash = &ptls_minicrypto_sha384,
+};
+
+static ptls_cipher_suite_t stream_aes256gcmsha384 = {
+    .id = PTLS_CIPHER_SUITE_AES_256_GCM_SHA384,
+    .name = PTLS_CIPHER_SUITE_NAME_AES_256_GCM_SHA384,
+    .aead = &ptls_non_temporal_aes256gcm,
+    .hash = &ptls_minicrypto_sha384,
+};
+
+static ptls_cipher_suite_t *acceleratedAesSuite(TLS_TRANSPORT transport)
+{
+    if (!fusionUsable()) {
+        return NULL;
+    }
+
+    return transport == kTLS_TRANSPORT_QUIC ? &quic_aes128gcmsha256 : &stream_aes128gcmsha256;
+}
+
+static ptls_cipher_suite_t *acceleratedAes256Suite(TLS_TRANSPORT transport)
+{
+    if (!fusionUsable()) {
+        return NULL;
+    }
+
+    return transport == kTLS_TRANSPORT_QUIC ? &quic_aes256gcmsha384 : &stream_aes256gcmsha384;
 }
 
 ptls_cipher_algorithm_t *TlsAead_Aes128Ecb(void)
 {
     return fusionUsable() ? &fusion_aes128ecb : &ptls_minicrypto_aes128ecb;
+}
+
+ptls_cipher_algorithm_t *TlsAead_Aes256Ecb(void)
+{
+    return fusionUsable() ? &fusion_aes256ecb : &ptls_minicrypto_aes256ecb;
 }
 
 static bool fusionUsable(void)
@@ -181,7 +250,7 @@ static int fusionEcbSetup(ptls_cipher_context_t *context, int is_enc, const void
     }
 
     self->ecb = fusionEcbOf(self);
-    ptls_fusion_aesecb_init(self->ecb, 1, key, PTLS_AES128_KEY_SIZE, 0);
+    ptls_fusion_aesecb_init(self->ecb, 1, key, self->super.algo->key_size, 0);
     self->super.do_dispose = fusionEcbDispose;
     self->super.do_init = NULL;
     self->super.do_transform = fusionEcbTransform;
@@ -191,11 +260,17 @@ static int fusionEcbSetup(ptls_cipher_context_t *context, int is_enc, const void
 
 #else
 
-static ptls_cipher_suite_t *acceleratedAesSuite(void);
+static ptls_cipher_suite_t *acceleratedAesSuite(TLS_TRANSPORT transport);
+static ptls_cipher_suite_t *acceleratedAes256Suite(TLS_TRANSPORT transport);
 
 ptls_aead_algorithm_t *TlsAead_Aes128Gcm(void)
 {
     return &ptls_minicrypto_aes128gcm;
+}
+
+ptls_aead_algorithm_t *TlsAead_Aes256Gcm(void)
+{
+    return &ptls_minicrypto_aes256gcm;
 }
 
 ptls_cipher_algorithm_t *TlsAead_Aes128Ecb(void)
@@ -203,8 +278,22 @@ ptls_cipher_algorithm_t *TlsAead_Aes128Ecb(void)
     return &ptls_minicrypto_aes128ecb;
 }
 
-static ptls_cipher_suite_t *acceleratedAesSuite(void)
+ptls_cipher_algorithm_t *TlsAead_Aes256Ecb(void)
 {
+    return &ptls_minicrypto_aes256ecb;
+}
+
+static ptls_cipher_suite_t *acceleratedAesSuite(TLS_TRANSPORT transport)
+{
+    (void)transport;
+
+    return NULL;
+}
+
+static ptls_cipher_suite_t *acceleratedAes256Suite(TLS_TRANSPORT transport)
+{
+    (void)transport;
+
     return NULL;
 }
 
@@ -212,23 +301,20 @@ static ptls_cipher_suite_t *acceleratedAesSuite(void)
 
 /* ---------- public: offered suites ---------- */
 
-ptls_cipher_suite_t **TlsAead_CipherSuites(void)
+ptls_cipher_suite_t **TlsAead_CipherSuites(TLS_TRANSPORT transport)
 {
-    static ptls_cipher_suite_t *suites[3];
-    ptls_cipher_suite_t *accelerated;
+    static ptls_cipher_suite_t *suites[kTLS_TRANSPORT_MAX][4];
+    ptls_cipher_suite_t **offered = suites[transport];
+    size_t count;
 
-    if (suites[0] != NULL) {
-        return suites;
+    if (offered[0] != NULL) {
+        return offered;
     }
 
-    accelerated = acceleratedAesSuite();
-    if (accelerated != NULL) {
-        suites[0] = accelerated;
-        suites[1] = &can_hub_chacha20poly1305sha256;
-        return suites;
-    }
+    count = 0;
+    count += appendSuite(offered, count, acceleratedAesSuite(transport));
+    count += appendSuite(offered, count, acceleratedAes256Suite(transport));
+    offered[count] = &can_hub_chacha20poly1305sha256;
 
-    suites[0] = &can_hub_chacha20poly1305sha256;
-
-    return suites;
+    return offered;
 }
