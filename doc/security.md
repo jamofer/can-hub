@@ -22,6 +22,34 @@ require client certificates (mTLS).
 One pin covers both `quic://` and `tls://` on the same host:port — the
 listeners share the certificate.
 
+## What the handshake negotiates
+
+TLS 1.3 only, ALPN `canhub/0`, ED25519 signatures. The offered cipher suites
+depend on what the CPU can do:
+
+| Build | Offered, most preferred first |
+|---|---|
+| x86-64 with AES-NI | `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256` |
+| everything else (arm64, armv7, static musl, any CPU without AES-NI) | `TLS_CHACHA20_POLY1305_SHA256` |
+
+AES is offered **only where there is a fast AES**. Without AES-NI the only
+AES implementation available is a constant-time software one that costs about
+2.4 ms to seal a 1200-byte record — roughly 900x the ChaCha20 path. In
+TLS 1.3 the server picks from what the client offered, so a device that never
+offers AES cannot be pushed onto that implementation by a server that prefers
+it. There is no capability signalling on the wire and no knob: the build
+decides, and a mixed fleet works because ChaCha20 is always offered.
+
+Interop is unaffected — an OpenSSL peer negotiates AES-128-GCM with an
+x86-64 build and ChaCha20-Poly1305 with an ARM one, both RFC 8446 suites.
+
+QUIC is the exception worth knowing about: RFC 9001 fixes AES-128-GCM for
+Initial packets whatever the connection later negotiates, so a hub on a CPU
+without AES-NI pays the software AES cost on every connection attempt. If you
+run the hub on a machine without AES-NI and expose it to the open internet,
+prefer `tls://` or put address validation in front of it — `tls://` has no
+mandatory suite and negotiates ChaCha20 there.
+
 ## Plaintext transports are network-trusted
 
 Plain `tcp://` and the unix socket carry no identity: no pinning, no

@@ -30,6 +30,11 @@ to socketcand and cannelloni.
 - **Fleet-shaped, not link-shaped.** One hub, many agents, a queryable
   catalogue (`truck42/can0`), per-peer and per-interface traffic counters,
   and an admin plane with a CLI and a web panel.
+- **Small enough for the edge.** No OpenSSL: the TLS 1.3 and QUIC stack is
+  picotls with permissively licensed primitives, statically linked. The
+  fully static musl agent is **~590 KB** on arm64 and armv7 with no runtime
+  dependencies at all, and its `.deb` is ~310 KB. Where the CPU has AES-NI
+  the handshake and data plane use it.
 - **Freestanding core.** Everything outside `src/platform/` is C11 without
   POSIX, heap or syscalls — the agent core compiles for microcontrollers
   as-is.
