@@ -2,6 +2,7 @@
 
 #include "platform/linux/shared/tls_identity_backend.h"
 
+
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,9 +12,9 @@
 
 #include <sys/stat.h>
 
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
+#include <picotls.h>
+#include <picotls/minicrypto.h>
+#include <picotls/pembase64.h>
 
 #define SYSTEM_STATE_DIRECTORY "/var/lib/can-hub"
 #define USER_STATE_SUBDIRECTORY "/.local/state/can-hub"
@@ -26,6 +27,7 @@
 #define CERTIFICATE_SERIAL 1
 #define CERTIFICATE_X509_VERSION_3 2
 #define FINGERPRINT_SIZE 32
+#define IDENTITY_CHAIN_MAX 4
 
 static bool directoryUsable(const char *directory);
 static bool makeDirectoryPath(const char *directory);
@@ -75,39 +77,12 @@ bool TlsIdentity_LoadOrCreate(
     return generateIdentity(certificate_path, key_path, name);
 }
 
-// get1 returns a counted reference, hence the X509_free the get0 form did not
-// need. Using the modern name is also what lets OpenSSL be built no-deprecated.
-bool TlsIdentity_FingerprintOfPeer(SSL *ssl, char *fingerprint_hex)
-{
-    X509 *certificate = SSL_get1_peer_certificate(ssl);
-    uint8_t *der = NULL;
-    int der_size;
-    bool computed = false;
-
-    if (certificate == NULL) {
-        return false;
-    }
-
-    der_size = i2d_X509(certificate, &der);
-    if (der_size > 0) {
-        computed = TlsIdentity_FingerprintOfDer(der, (size_t)der_size, fingerprint_hex);
-        OPENSSL_free(der);
-    }
-    X509_free(certificate);
-
-    return computed;
-}
-
 bool TlsIdentity_FingerprintOfDer(const uint8_t *certificate_der, size_t der_size, char *fingerprint_hex)
 {
     uint8_t fingerprint[FINGERPRINT_SIZE];
-    unsigned int fingerprint_size = 0;
     size_t i;
 
-    if (!EVP_Digest(certificate_der, der_size, fingerprint, &fingerprint_size, EVP_sha256(), NULL)) {
-        return false;
-    }
-    if (fingerprint_size != FINGERPRINT_SIZE) {
+    if (ptls_calc_hash(&ptls_minicrypto_sha256, fingerprint, certificate_der, der_size) != 0) {
         return false;
     }
 
@@ -120,38 +95,26 @@ bool TlsIdentity_FingerprintOfDer(const uint8_t *certificate_der, size_t der_siz
 
 bool TlsIdentity_FingerprintOfFile(const char *certificate_path, char *fingerprint_hex)
 {
-    FILE *file;
-    X509 *certificate;
-    uint8_t *der = NULL;
-    int der_size;
+    ptls_iovec_t certificates[IDENTITY_CHAIN_MAX];
+    size_t count = 0;
     bool computed = false;
+    size_t i;
 
-    file = fopen(certificate_path, "r");
-    if (file == NULL) {
+    if (ptls_load_pem_objects(certificate_path, "CERTIFICATE", certificates, IDENTITY_CHAIN_MAX, &count) != 0) {
         return false;
     }
-    certificate = PEM_read_X509(file, NULL, NULL, NULL);
-    fclose(file);
-    if (certificate == NULL) {
-        return false;
+    if (count > 0) {
+        computed = TlsIdentity_FingerprintOfDer(certificates[0].base, certificates[0].len, fingerprint_hex);
     }
 
-    der_size = i2d_X509(certificate, &der);
-    if (der_size > 0) {
-        computed = TlsIdentity_FingerprintOfDer(der, (size_t)der_size, fingerprint_hex);
-        OPENSSL_free(der);
+    for(i=0; i<count; i++) {
+        free(certificates[i].base);
     }
-    X509_free(certificate);
 
     return computed;
 }
 
 /* ---------- private ---------- */
-
-// EVP_PKEY_Q_keygen is an OpenSSL 3.x convenience with no counterpart in the
-// wolfSSL compatibility layer; the context form works on both. NID_ED25519 is
-// the identifier both stacks agree on (EVP_PKEY_ED25519 is OpenSSL-only, and
-// is the same value).
 
 static bool directoryUsable(const char *directory)
 {

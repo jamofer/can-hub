@@ -12,20 +12,12 @@ set(CMAKE_C_FLAGS_DEBUG "-O0 -g")
 
 add_compile_options(-Wall -Wextra)
 
-option(CAN_HUB_STATIC "Fully static binaries against a static OpenSSL stack" OFF)
+option(CAN_HUB_STATIC "Fully static binaries" OFF)
 
-# openssl (default) or awslc. AWS-LC is Apache-2.0/ISC and yields a far smaller
-# binary; see cmake/awslc.cmake. Reject anything else rather than silently
-# falling back, and say so when a combination is not wired up yet.
-set(CAN_HUB_TLS_BACKEND "openssl" CACHE STRING "TLS backend: openssl | awslc")
-if(NOT CAN_HUB_TLS_BACKEND MATCHES "^(openssl|awslc)$")
-    message(FATAL_ERROR "CAN_HUB_TLS_BACKEND must be openssl or awslc, got '${CAN_HUB_TLS_BACKEND}'")
-endif()
-if(CAN_HUB_STATIC AND CAN_HUB_TLS_BACKEND STREQUAL "awslc")
-    message(FATAL_ERROR "CAN_HUB_STATIC builds against the sysroot OpenSSL; the awslc backend is not wired into it yet")
-endif()
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND CAN_HUB_TLS_BACKEND STREQUAL "awslc")
-    message(FATAL_ERROR "the awslc backend is not wired into the windows build yet")
+include(ProcessorCount)
+ProcessorCount(CAN_HUB_BUILD_PARALLELISM)
+if(CAN_HUB_BUILD_PARALLELISM EQUAL 0)
+    set(CAN_HUB_BUILD_PARALLELISM 1)
 endif()
 if(CAN_HUB_STATIC)
     add_compile_options(-ffunction-sections -fdata-sections)
@@ -33,25 +25,20 @@ if(CAN_HUB_STATIC)
     # size (4K/16K/64K). Default 4K-aligned PT_LOAD segments fail to map and
     # SIGSEGV before main on 16K-page kernels (e.g. Raspberry Pi OS arm64 on Pi 5).
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -Wl,--gc-sections -Wl,-z,max-page-size=0x10000")
-    set(OPENSSL_ROOT_DIR "$ENV{CAN_HUB_SYSROOT}")
-    set(OPENSSL_USE_STATIC_LIBS TRUE)
-    find_package(OpenSSL REQUIRED)
-elseif(CAN_HUB_TLS_BACKEND STREQUAL "awslc")
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/awslc.cmake)
-else()
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/openssl.cmake)
 endif()
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/picotls.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/monocypher.cmake)
 
 include_directories(src)
 
 include(FetchContent)
 set(ENABLE_GNUTLS OFF CACHE BOOL "" FORCE)
-if(CAN_HUB_TLS_BACKEND STREQUAL "awslc")
-    set(ENABLE_OPENSSL OFF CACHE BOOL "" FORCE)
-    set(ENABLE_BORINGSSL ON CACHE BOOL "" FORCE)
-else()
-    set(ENABLE_OPENSSL ON CACHE BOOL "" FORCE)
-endif()
+# The crypto backend is built from ngtcp2's sources by
+# cmake/ngtcp2_picotls_minicrypto.cmake, so ngtcp2 itself needs no TLS stack
+# and its configure-time OpenSSL probe is skipped.
+set(ENABLE_OPENSSL OFF CACHE BOOL "" FORCE)
+set(ENABLE_PICOTLS OFF CACHE BOOL "" FORCE)
 set(ENABLE_SHARED_LIB OFF CACHE BOOL "" FORCE)
 set(ENABLE_STATIC_LIB ON CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -63,13 +50,10 @@ FetchContent_MakeAvailable(ngtcp2)
 
 # One name for "the TLS stack and its ngtcp2 backend", so the link lines below
 # do not have to know which one is in play.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ngtcp2_picotls_minicrypto.cmake)
+
 add_library(can_hub_tls INTERFACE)
-if(CAN_HUB_TLS_BACKEND STREQUAL "awslc")
-    target_link_libraries(can_hub_tls INTERFACE ngtcp2_crypto_boringssl_static awslc)
-    target_compile_definitions(can_hub_tls INTERFACE CAN_HUB_TLS_BORINGSSL)
-else()
-    target_link_libraries(can_hub_tls INTERFACE ngtcp2_crypto_ossl_static OpenSSL::SSL OpenSSL::Crypto)
-endif()
+target_link_libraries(can_hub_tls INTERFACE ngtcp2_crypto_picotls_minicrypto picotls monocypher)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(LIBCANHUB_WINDOWS_SOURCES
@@ -92,6 +76,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         src/platform/linux/shared/pin_store.c
         src/platform/linux/shared/pinned_server_verifier.c
         src/platform/linux/shared/tls_defaults.c
+        src/platform/linux/shared/tls_peer_certificate.c
+        src/platform/linux/shared/tls_ed25519.c
+        src/platform/linux/shared/tls_aead.c
+    src/platform/linux/shared/tls_aead.c
+    src/platform/linux/shared/tls_ed25519.c
+    src/platform/linux/shared/tls_aead.c
         src/platform/linux/tls/tls_channel.c
         src/platform/linux/tls/tls_client_security.c
         src/platform/linux/quic/quic_client_security.c
@@ -104,6 +94,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         src/platform/windows/tcp/tcp_channel.c
         src/platform/windows/tcp/tcp_client_transport.c
         src/platform/windows/tls/tls_client_transport.c
+        src/platform/linux/shared/tls_identity_ed25519.c
         src/platform/windows/shared/tls_identity.c
         src/platform/windows/libcanhub/canhub.c
     )
@@ -168,7 +159,10 @@ set(AGENT_SOURCES
     src/platform/linux/shared/pinned_server_verifier.c
     src/platform/linux/shared/tls_defaults.c
     src/platform/linux/shared/tls_identity.c
-    src/platform/linux/shared/tls_identity_openssl.c
+    src/platform/linux/shared/tls_identity_ed25519.c
+    src/platform/linux/shared/tls_peer_certificate.c
+    src/platform/linux/shared/tls_ed25519.c
+    src/platform/linux/shared/tls_aead.c
     src/platform/linux/shared/message_framer.c
     src/platform/linux/socketcan/socketcan_adapter.c
     src/platform/linux/socketcan/can_netlink.c
@@ -205,7 +199,10 @@ set(HUB_SOURCES
     src/platform/linux/shared/pin_store.c
     src/platform/linux/shared/tls_defaults.c
     src/platform/linux/shared/tls_identity.c
-    src/platform/linux/shared/tls_identity_openssl.c
+    src/platform/linux/shared/tls_identity_ed25519.c
+    src/platform/linux/shared/tls_peer_certificate.c
+    src/platform/linux/shared/tls_ed25519.c
+    src/platform/linux/shared/tls_aead.c
     src/platform/linux/shared/message_framer.c
     src/platform/linux/tcp/tcp_channel.c
     src/platform/linux/tcp/tcp_server_transport.c
@@ -247,7 +244,10 @@ set(CLIENT_TLS_SOURCES
     src/platform/linux/shared/pinned_server_verifier.c
     src/platform/linux/shared/tls_defaults.c
     src/platform/linux/shared/tls_identity.c
-    src/platform/linux/shared/tls_identity_openssl.c
+    src/platform/linux/shared/tls_identity_ed25519.c
+    src/platform/linux/shared/tls_peer_certificate.c
+    src/platform/linux/shared/tls_ed25519.c
+    src/platform/linux/shared/tls_aead.c
     src/platform/linux/tls/tls_channel.c
     src/platform/linux/tls/tls_client_security.c
     src/platform/linux/tls/tls_client_transport.c

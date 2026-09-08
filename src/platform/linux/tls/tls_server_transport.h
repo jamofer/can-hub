@@ -21,6 +21,7 @@
  */
 typedef struct {
     TlsChannel channel;
+    int32_t fd;
     uint32_t peer_id;
     bool announced;
     char origin[TLS_SERVER_ORIGIN_SIZE];

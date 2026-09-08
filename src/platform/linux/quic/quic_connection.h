@@ -6,7 +6,9 @@
 
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
-#include "platform/linux/quic/quic_tls_backend.h"
+#include <ngtcp2/ngtcp2_crypto_picotls.h>
+
+#include "platform/linux/shared/tls_peer_certificate.h"
 
 /*
  * Thin wrapper around one ngtcp2 connection (client or server side): owns
@@ -27,16 +29,20 @@ typedef struct {
 typedef struct {
     ngtcp2_conn *connection;
     ngtcp2_crypto_conn_ref connection_ref;
+    TlsPeerCertificate peer;
     QuicConnectionEvents events;
     uint64_t next_datagram_id;
 } QuicConnection;
 
 void QuicConnection_Bind(QuicConnection *self, const QuicConnectionEvents *events);
 ngtcp2_crypto_conn_ref *QuicConnection_Ref(QuicConnection *self);
-bool QuicConnection_Open(QuicConnection *self, QuicTlsContext *tls_context, const ngtcp2_path *path);
+ngtcp2_conn *QuicConnection_Handle(QuicConnection *self);
+TlsPeerCertificate *QuicConnection_PeerCertificate(QuicConnection *self);
+TlsPeerCertificate *QuicConnection_PeerCertificateOfSession(ptls_t *tls);
+bool QuicConnection_Open(QuicConnection *self, ngtcp2_crypto_picotls_ctx *tls_context, const ngtcp2_path *path);
 bool QuicConnection_OpenServer(
     QuicConnection *self,
-    QuicTlsContext *tls_context,
+    ngtcp2_crypto_picotls_ctx *tls_context,
     const ngtcp2_path *path,
     const ngtcp2_pkt_hd *initial_header
 );

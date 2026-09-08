@@ -76,10 +76,11 @@ wheel bundles `libcanhub` with the TLS/QUIC stack statically linked. See
 
 ## From source
 
-Requirements: cmake >= 3.16, ninja, gcc, perl. The first configure needs
-network access — a pinned OpenSSL 3.5 is built from source once per build
+Requirements: cmake >= 3.16, ninja, gcc, git. The first configure needs
+network access — picotls and Monocypher are cloned and built once per build
 tree, and ngtcp2 plus the SQLite amalgamation are fetched and built
-statically.
+statically. There is no OpenSSL: perl is no longer needed and nothing links
+libssl or libcrypto.
 
 ```sh
 make release                  # build/x86_64/release

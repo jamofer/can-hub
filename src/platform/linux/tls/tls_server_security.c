@@ -1,41 +1,32 @@
 #include "platform/linux/tls/tls_server_security.h"
 
-#include "platform/linux/shared/tls_defaults.h"
+#include <string.h>
 
 /* ---------- public ---------- */
 
 bool TlsServerSecurity_Init(TlsServerSecurity *self, const char *certificate_file, const char *key_file)
 {
-    self->context = TlsDefaults_NewContext(TLS_server_method());
-    if (self->context == NULL) {
+    memset(self, 0, sizeof(*self));
+
+    if (!TlsDefaults_InitServerProfile(&self->profile, kTLS_TRANSPORT_STREAM, TlsPeerCertificate_FromDataPointer)) {
         return false;
     }
-
-    if (!TlsDefaults_LoadIdentity(self->context, certificate_file, key_file)) {
+    if (!TlsDefaults_LoadIdentity(&self->profile, certificate_file, key_file)) {
         TlsServerSecurity_Free(self);
         return false;
     }
-    TlsDefaults_ConfigureServerContext(self->context);
 
     return true;
 }
 
 void TlsServerSecurity_Free(TlsServerSecurity *self)
 {
-    if (self->context != NULL) {
-        SSL_CTX_free(self->context);
-        self->context = NULL;
-    }
+    TlsDefaults_FreeProfile(&self->profile);
 }
 
-bool TlsServerSecurity_NewSession(TlsServerSecurity *self, SSL **ssl)
+bool TlsServerSecurity_NewSession(TlsServerSecurity *self, ptls_t **tls)
 {
-    *ssl = SSL_new(self->context);
-    if (*ssl == NULL) {
-        return false;
-    }
+    *tls = ptls_new(&self->profile.context, 1);
 
-    TlsDefaults_ConfigureServerSession(*ssl);
-
-    return true;
+    return *tls != NULL;
 }

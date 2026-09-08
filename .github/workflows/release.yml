@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev perl
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
       - name: unit tests
         run: make test
       - name: release build
@@ -70,10 +70,10 @@ jobs:
   python-wheels:
     needs: create-release
     # Each arch builds on its native arm64/x86 runner instead of x86 + QEMU,
-    # which kept the emulated OpenSSL build under 30 min. The armv7l container
-    # runs on the arm64 host where uname reports aarch64; build-python-wheel.sh
-    # forces CMAKE_SYSTEM_PROCESSOR=armv7l so OpenSSL configures linux-armv4
-    # (32-bit asm) to match the 32-bit toolchain.
+    # which kept the emulated dependency builds inside the job timeout. The
+    # armv7l container runs on the arm64 host where uname reports aarch64;
+    # nothing in the stack has per-architecture assembly any more, so that
+    # mismatch no longer needs a CMAKE_SYSTEM_PROCESSOR override.
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -107,7 +107,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build perl
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
       - name: install llvm-mingw
         run: |
           curl -fsSL -o /tmp/llvm-mingw.tar.xz "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64.tar.xz"

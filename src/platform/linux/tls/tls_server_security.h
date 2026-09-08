@@ -2,17 +2,21 @@
 
 #include <stdbool.h>
 
-#include <openssl/ssl.h>
+#include <picotls.h>
+
+#include "platform/linux/shared/tls_defaults.h"
 
 /*
- * TLS context of the hub listener over TCP: the hub identity keypair plus
- * per-peer server sessions that require a client certificate (mTLS) — the
- * peer fingerprint is the identity the broker pins at REGISTER.
+ * Server-side TLS material: the picotls context carrying the can-hub
+ * profile, the hub identity and the accept-any client certificate policy.
+ * Client identity is pinned at the application layer from the fingerprint
+ * the channel records during the handshake.
  */
+
 typedef struct {
-    SSL_CTX *context;
+    TlsProfile profile;
 } TlsServerSecurity;
 
 bool TlsServerSecurity_Init(TlsServerSecurity *self, const char *certificate_file, const char *key_file);
 void TlsServerSecurity_Free(TlsServerSecurity *self);
-bool TlsServerSecurity_NewSession(TlsServerSecurity *self, SSL **ssl);
+bool TlsServerSecurity_NewSession(TlsServerSecurity *self, ptls_t **tls);

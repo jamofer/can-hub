@@ -4,7 +4,7 @@
 
 #include <string.h>
 
-#include <openssl/rand.h>
+#include <picotls/minicrypto.h>
 
 #define NO_STREAM (-1)
 #define LOCAL_CID_LIST_MAX 32
@@ -78,7 +78,25 @@ ngtcp2_crypto_conn_ref *QuicConnection_Ref(QuicConnection *self)
     return &self->connection_ref;
 }
 
-bool QuicConnection_Open(QuicConnection *self, QuicTlsContext *tls_context, const ngtcp2_path *path)
+ngtcp2_conn *QuicConnection_Handle(QuicConnection *self)
+{
+    return self->connection;
+}
+
+TlsPeerCertificate *QuicConnection_PeerCertificate(QuicConnection *self)
+{
+    return &self->peer;
+}
+
+TlsPeerCertificate *QuicConnection_PeerCertificateOfSession(ptls_t *tls)
+{
+    ngtcp2_crypto_conn_ref *reference = *ptls_get_data_ptr(tls);
+    QuicConnection *self = reference->user_data;
+
+    return &self->peer;
+}
+
+bool QuicConnection_Open(QuicConnection *self, ngtcp2_crypto_picotls_ctx *tls_context, const ngtcp2_path *path)
 {
     ngtcp2_callbacks callbacks;
     ngtcp2_settings settings;
@@ -117,7 +135,7 @@ bool QuicConnection_Open(QuicConnection *self, QuicTlsContext *tls_context, cons
 
 bool QuicConnection_OpenServer(
     QuicConnection *self,
-    QuicTlsContext *tls_context,
+    ngtcp2_crypto_picotls_ctx *tls_context,
     const ngtcp2_path *path,
     const ngtcp2_pkt_hd *initial_header
 )
@@ -387,7 +405,7 @@ static void buildParams(ngtcp2_transport_params *params)
 
 static void randomCid(ngtcp2_cid *cid)
 {
-    RAND_bytes(cid->data, QUIC_CONNECTION_CID_LENGTH);
+    ptls_minicrypto_random_bytes(cid->data, QUIC_CONNECTION_CID_LENGTH);
     cid->datalen = QUIC_CONNECTION_CID_LENGTH;
 }
 
@@ -395,7 +413,7 @@ static void randCallback(uint8_t *destination, size_t destination_length, const 
 {
     (void)rand_context;
 
-    RAND_bytes(destination, (int)destination_length);
+    ptls_minicrypto_random_bytes(destination, destination_length);
 }
 
 static int getNewConnectionIdCallback(
@@ -409,14 +427,9 @@ static int getNewConnectionIdCallback(
     (void)connection;
     (void)user_data;
 
-    if (RAND_bytes(cid->data, (int)cid_length) != 1) {
-        return NGTCP2_ERR_CALLBACK_FAILURE;
-    }
+    ptls_minicrypto_random_bytes(cid->data, cid_length);
     cid->datalen = cid_length;
-
-    if (RAND_bytes(token, NGTCP2_STATELESS_RESET_TOKENLEN) != 1) {
-        return NGTCP2_ERR_CALLBACK_FAILURE;
-    }
+    ptls_minicrypto_random_bytes(token, NGTCP2_STATELESS_RESET_TOKENLEN);
 
     return 0;
 }
