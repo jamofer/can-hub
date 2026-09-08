@@ -58,27 +58,56 @@ Not timed; run for agreement only, which is what it found.
 The same source built with gcc on Linux matches in every combination. `cmake/picotls.cmake`
 therefore forces the 128-bit path on Windows.
 
-## arm64 / armv7 — correct, speed unknown
+## arm64 — Raspberry Pi 5, 2026-09-08
 
-Run under qemu (`docker --platform linux/arm64` and `linux/arm/v7`, Debian bookworm, native
-gcc in the container), 2026-09-08. **Agreement only** — emulated timings are not reported here
-because they measure qemu, not the target.
+Cortex-A76, Debian bookworm, gcc, load average 0.37. **This CPU has the ARMv8 crypto
+extensions** (`aes pmull sha1 sha2` in `/proc/cpuinfo`), so OpenSSL uses hardware AES here and
+this stack does not — the worst case for us, and the right place to look first.
+
+Four consecutive runs of our bench landed within 0.5 %: 0.740-0.744 µs and 6.80-6.85 µs. A
+quiet host measures cleanly, which the development machine does not (#193).
+
+| AEAD, one operation | 40 B (CAN frame) | 1200 B (MTU) |
+|---|---|---|
+| **can-hub CHACHA20-POLY1305** — what an ARM build negotiates | **0.742** | **6.82** |
+| minicrypto CHACHA20-POLY1305 (cifra POLY1305) | 2.268 | 30.005 |
+| minicrypto AES-128-GCM (cifra) | 257.6 | 3 953 |
+| minicrypto AES-256-GCM (cifra) | 357.9 | 5 505 |
+| OpenSSL 3.5.4 CHACHA20-POLY1305 | 0.220 | 2.053 |
+| OpenSSL 3.5.4 AES-128-GCM (hardware) | 0.349 | 0.843 |
+| OpenSSL 3.5.4 AES-256-GCM (hardware) | 0.358 | 0.978 |
+
+OpenSSL figures are `openssl speed -evp <alg> -bytes <n>` converted from bytes/s, because the
+target has no OpenSSL headers and nothing was installed on it. That harness does slightly less
+per operation than `ptls_aead_encrypt`, so it is a lower bound on OpenSSL's cost — the gap
+below is an upper bound on ours.
+
+**Reading it:** against OpenSSL's best on this CPU we are **3.4x slower at CAN frame size** and
+**8.1x at MTU**. The Monocypher POLY1305 binding is still what makes it bearable: it is 3.1x
+faster than stock minicrypto at 40 B and 4.4x at 1200 B. cifra's AES is unusable, at 5 300x
+OpenSSL's hardware AES for a 1200-byte record — which is why AES is never offered here.
+
+**And the absolute numbers matter more than the ratio.** 0.742 µs/frame is 1.35 M frames/s per
+core; a saturated 1 Mbit/s CAN bus is about 8 700 frames/s, so one Pi 5 core covers roughly 150
+fully loaded buses' worth of AEAD. Being 3.4x behind OpenSSL is not a constraint on any CAN
+workload. It would start to matter for a hub aggregating hundreds of buses, or for sustained
+bulk transfer at MTU.
+
+**The number that does have a consequence** is cifra's AES at 3 953 µs per 1200-byte record.
+RFC 9001 fixes AES-128-GCM for QUIC Initial packets, so a hub on this hardware spends that on
+every connection attempt, from any unauthenticated peer: one core is saturated by about 250
+Initial packets per second. On an ARM hub, QUIC address validation is not an optimisation.
+
+## armv7 — correct, speed not measured
+
+Run under qemu (`docker --platform linux/arm/v7`, Debian bookworm, native gcc in the
+container). **Agreement only** — emulated timings measure qemu, not the target.
 
 | Engine | one-shot | vectored |
 |---|---|---|
-| `can-hub chacha20poly1305`, aarch64 | match | match |
 | `can-hub chacha20poly1305`, armv7l | match | match |
+| `can-hub chacha20poly1305`, aarch64 (also checked this way) | match | match |
 
-So the Monocypher POLY1305 binding is correct on both, which had never been checked. fusion is
-x86-64 only and picotls ships no ARM AES engine, so ChaCha20-Poly1305 is the whole story there.
-
-**Throughput still needs hardware.** On the target:
-
-    make BUILD=<can-hub build tree> FUSION=0 && ./aead_bench
-
-and compare against OpenSSL's ChaCha20-Poly1305 and AES-128-GCM on the same CPU. Check
-`/proc/cpuinfo` for `aes` and `pmull` first: the ARMv8 crypto extensions are optional, and the
-answer depends on them. Where they are present OpenSSL uses hardware AES and we do not, which
-is the worst case for this stack; where they are absent OpenSSL also falls back to software and
-we may well be ahead. Measure on hardware representative of the fleet, not on whatever is
-nearest.
+To measure a real armv7 target, copy the sources and build with plain gcc — no cmake needed:
+the file list is in `spike/aead-bench/` history, or use the tree's build with
+`make BUILD=<can-hub build tree> FUSION=0`.

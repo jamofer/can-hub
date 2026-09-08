@@ -33,22 +33,30 @@ depend on what the CPU can do:
 | everything else (arm64, armv7, static musl, any CPU without AES-NI) | `TLS_CHACHA20_POLY1305_SHA256` |
 
 AES is offered **only where there is a fast AES**. Without AES-NI the only
-AES implementation available is a constant-time software one that costs about
-2.4 ms to seal a 1200-byte record — roughly 900x the ChaCha20 path. In
-TLS 1.3 the server picks from what the client offered, so a device that never
-offers AES cannot be pushed onto that implementation by a server that prefers
-it. There is no capability signalling on the wire and no knob: the build
-decides, and a mixed fleet works because ChaCha20 is always offered.
+AES implementation available is a constant-time software one that takes
+2.4 ms to seal a 1200-byte record on x86-64 and 4.0 ms on a Raspberry Pi 5 —
+600 to 900 times the ChaCha20 path on the same CPU. In TLS 1.3 the server
+picks from what the client offered, so a device that never offers AES cannot
+be pushed onto that implementation by a server that prefers it. There is no
+capability signalling on the wire and no knob: the build decides, and a mixed
+fleet works because ChaCha20 is always offered.
+
+This is about the software fallback, not about the silicon: an ARM chip may
+well have the ARMv8 crypto extensions (a Pi 5 does), but no ARM AES engine
+exists in this stack, so ChaCha20 is what an ARM build uses either way. At
+0.74 µs per CAN frame on a Pi 5 that is roughly 1.3 M frames/s on one core,
+against about 8 700 frames/s from a saturated 1 Mbit/s bus.
 
 Interop is unaffected — an OpenSSL peer negotiates AES-128-GCM with an
 x86-64 build and ChaCha20-Poly1305 with an ARM one, both RFC 8446 suites.
 
 QUIC is the exception worth knowing about: RFC 9001 fixes AES-128-GCM for
 Initial packets whatever the connection later negotiates, so a hub on a CPU
-without AES-NI pays the software AES cost on every connection attempt. If you
-run the hub on a machine without AES-NI and expose it to the open internet,
-prefer `tls://` or put address validation in front of it — `tls://` has no
-mandatory suite and negotiates ChaCha20 there.
+without a fast AES pays the software AES cost on every connection attempt,
+including attempts from peers it has never heard of. On a Pi 5 that is about
+4 ms per packet. If you run the hub on such a machine and expose it to the
+open internet, prefer `tls://` or put address validation in front of it —
+`tls://` has no mandatory suite and negotiates ChaCha20 there.
 
 ## Plaintext transports are network-trusted
 
